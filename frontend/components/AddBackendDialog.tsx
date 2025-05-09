@@ -1,6 +1,7 @@
+/* eslint-disable react-hooks/exhaustive-deps */
 "use client";
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -9,75 +10,109 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogClose, 
+  DialogClose,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { AlertCircle } from 'lucide-react';
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
+import { AlertCircle } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 export interface AddBackendFormData {
   name: string;
-  url: string;
-  apiKey: string; 
+  url: string; 
+  apiKey: string;
 }
 
 interface AddBackendDialogProps {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
-  onSave: (formData: AddBackendFormData) => void; 
+  onSave: (formData: AddBackendFormData) => void;
 }
 
-export default function AddBackendDialog({ isOpen, onOpenChange, onSave }: AddBackendDialogProps) {
-  const [name, setName] = useState('');
-  const [url, setUrl] = useState('');
-  const [apiKey, setApiKey] = useState(''); // State for API Key
+export default function AddBackendDialog({
+  isOpen,
+  onOpenChange,
+  onSave,
+}: AddBackendDialogProps) {
+  const [name, setName] = useState("");
+  const [scheme, setScheme] = useState<"http" | "https">("http");
+  const [host, setHost] = useState("");
+  const [port, setPort] = useState("");
+  const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  // Reset form when dialog opens or closes
   useEffect(() => {
     if (!isOpen) {
-      setName('');
-      setUrl('');
-      setApiKey(''); // Reset API key field
+      setName("");
+      setScheme("https");
+      setHost("");
+      setPort("");
+      setApiKey("");
       setError(null);
     }
   }, [isOpen]);
 
+  const validateHost = (value: string) => {
+    const hostRegex = /^(localhost|\d{1,3}(?:\.\d{1,3}){3}|[a-zA-Z0-9.-]+)$/;
+    return hostRegex.test(value);
+  };
+
   const handleSave = () => {
     setError(null);
+
     if (!name.trim()) {
       setError("Backend name cannot be empty.");
       return;
     }
-    if (!url.trim()) {
-      setError("Backend URL cannot be empty.");
+
+    if (!host.trim()) {
+      setError("Backend host cannot be empty.");
       return;
     }
-    try {
-      new URL(url.trim());
-    } catch (_) {
-      setError("Invalid URL format. Please include http:// or https://");
+
+    if (!validateHost(host.trim())) {
+      setError("Invalid host format. Use IP address, domain, or 'localhost'.");
       return;
     }
-    // API Key is now mandatory
+
+    if (!port.trim()) {
+      setError("Port cannot be empty.");
+      return;
+    }
+
+    const portNum = Number(port.trim());
+    if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
+      setError("Port must be an integer between 1 and 65535.");
+      return;
+    }
+
     if (!apiKey.trim()) {
       setError("API Key cannot be empty.");
       return;
     }
 
-    onSave({ name: name.trim(), url: url.trim(), apiKey: apiKey.trim() });
+    const url = `${scheme}://${host.trim()}:${portNum}`;
+
+    onSave({ name: name.trim(), url, apiKey: apiKey.trim() });
   };
 
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[425px]">
+      <DialogContent className="sm:max-w-[30vw] max-w-[95vw]">
         <DialogHeader>
           <DialogTitle>Add New Backend</DialogTitle>
           <DialogDescription>
-            Enter a name, the full URL, and the API Key for the backend server.
+            Select protocol, enter host and port, and provide the API Key for the backend server.
           </DialogDescription>
         </DialogHeader>
+
         <div className="grid gap-4 py-4">
           {error && (
             <Alert variant="destructive">
@@ -86,8 +121,9 @@ export default function AddBackendDialog({ isOpen, onOpenChange, onSave }: AddBa
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}
+
           <div className="grid grid-cols-4 items-center gap-4">
-            <Label htmlFor="backend-name" className="text-right">
+            <Label htmlFor="backend-name" >
               Name
             </Label>
             <Input
@@ -99,22 +135,29 @@ export default function AddBackendDialog({ isOpen, onOpenChange, onSave }: AddBa
               required
             />
           </div>
+
           <div className="grid grid-cols-4 items-center gap-4">
-            <Label htmlFor="backend-url" className="text-right">
-              URL
-            </Label>
-            <Input
-              id="backend-url"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              className="col-span-3"
-              placeholder="e.g., http://192.168.1.100:8080"
-              type="url"
-              required
-            />
+            <Label >Protocol</Label>
+            <Select value={scheme} onValueChange={(v) => setScheme(v as "http" | "https") }>
+              <SelectTrigger className="col-span-3">
+                <SelectValue placeholder="http" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="http">http</SelectItem>
+                <SelectItem value="https">https</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="grid grid-cols-4 items-center gap-4">
+            <Label htmlFor="backend-host">IP / Port</Label>
+            <div className="col-span-3 grid grid-cols-[minmax(0,1fr)_5rem] gap-2">
+              <Input id="backend-host" value={host} onChange={(e) => setHost(e.target.value)} placeholder="e.g., 192.168.1.100" autoComplete="off" required />
+              <Input id="backend-port" value={port} onChange={(e) => setPort(e.target.value.replace(/[^0-9]/g, ""))} placeholder="Port" inputMode="numeric" pattern="[0-9]*" required />
+            </div>
           </div>
           <div className="grid grid-cols-4 items-center gap-4">
-            <Label htmlFor="backend-apikey" className="text-right">
+            <Label htmlFor="backend-apikey" >
               API Key
             </Label>
             <Input
@@ -123,16 +166,21 @@ export default function AddBackendDialog({ isOpen, onOpenChange, onSave }: AddBa
               onChange={(e) => setApiKey(e.target.value)}
               className="col-span-3"
               placeholder="Enter backend specific API Key"
-              type="password" 
+              type="password"
               required
             />
           </div>
         </div>
+
         <DialogFooter>
           <DialogClose asChild>
-             <Button type="button" variant="outline">Cancel</Button>
+            <Button type="button" variant="outline">
+              Cancel
+            </Button>
           </DialogClose>
-          <Button type="button" onClick={handleSave}>Save Backend</Button>
+          <Button type="button" onClick={handleSave}>
+            Save Backend
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

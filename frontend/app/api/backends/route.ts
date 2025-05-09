@@ -5,8 +5,8 @@ import { v4 as uuidv4 } from 'uuid';
 
 export async function GET() {
   try {
-    const stmt = db.prepare('SELECT id, name, url, apiKey FROM backends ORDER BY createdAt DESC');
-    const backends = stmt.all() as BackendConfig[]; 
+    const stmt = db.prepare('SELECT id, name, url FROM backends ORDER BY createdAt DESC');
+    const backends = stmt.all() as Omit<BackendConfig, 'apiKey'>[]; 
     return NextResponse.json(backends);
   } catch (error: any) {
     console.error("Error fetching backends:", error);
@@ -16,7 +16,7 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json() as Omit<BackendConfig, 'id' | 'createdAt'>; // Expect name, url, apiKey
+    const body = await request.json() as Omit<BackendConfig, 'id' | 'createdAt'>;
 
     if (!body.name || !body.url || !body.apiKey) {
       return NextResponse.json({ error: 'Bad Request', details: 'Missing required fields: name, url, apiKey.' }, { status: 400 });
@@ -29,23 +29,19 @@ export async function POST(request: NextRequest) {
 
     const newId = uuidv4();
     const stmt = db.prepare('INSERT INTO backends (id, name, url, apiKey) VALUES (?, ?, ?, ?)');
-    const info = stmt.run(newId, body.name, body.url, body.apiKey);
-
-    // Check for unique constraint violation (url)
-    // Note: better-sqlite3 throws an error for constraint violations, caught below
+    const _ = stmt.run(newId, body.name, body.url, body.apiKey);
 
     const newBackend: BackendConfig = {
         id: newId,
         name: body.name,
         url: body.url,
-        apiKey: body.apiKey // Return the apiKey? Maybe not necessary for GET, but needed for insert
+        apiKey: body.apiKey
     };
 
-    return NextResponse.json(newBackend, { status: 201 }); // Return the newly created backend
+    return NextResponse.json(newBackend, { status: 201 }); 
 
   } catch (error: any) {
     console.error("Error adding backend:", error);
-    // Handle specific constraint errors (like UNIQUE URL)
     if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
         return NextResponse.json({ error: 'Conflict', details: 'A backend with this URL already exists.' }, { status: 409 });
     }
