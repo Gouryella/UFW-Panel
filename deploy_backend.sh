@@ -3,7 +3,7 @@
 GITHUB_REPO="Gouryella/UFW-Panel"
 GITHUB_API="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
 
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="/usr/local/bin/ufw-panel-backend"
 EXECUTABLE_NAME="ufw-panel-backend"
 EXECUTABLE_PATH="$INSTALL_DIR/$EXECUTABLE_NAME"
 ENV_FILE="$INSTALL_DIR/.env_ufw_backend"
