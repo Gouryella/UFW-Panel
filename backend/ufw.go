@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"strconv"
 )
 
 type UFWStatus struct {
