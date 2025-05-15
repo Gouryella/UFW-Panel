@@ -205,15 +205,28 @@ func AllowUFWFromIP(ipAddress string, portProto string, comment string) error {
 
 	args := []string{"ufw", "allow", "from", ipAddress}
 	if portProto != "" {
-		args = append(args, "to", "any", "port", portProto)
+		if strings.Contains(portProto, "/") {
+			parts := strings.SplitN(portProto, "/", 2)
+			port := parts[0]
+			protocol := parts[1]
+			args = append(args, "to", "any", "port", port)
+			if protocol != "" {
+				args = append(args, "proto", protocol)
+			}
+		} else {
+			if _, err := strconv.Atoi(portProto); err == nil {
+				args = append(args, "to", "any", "port", portProto)
+			} else {
+				args = append(args, "proto", portProto)
+			}
+		}
 	}
 	if comment != "" {
-		if strings.ContainsAny(comment, "'\";|&`$<>\\") {
+		if strings.ContainsAny(comment, "'\";|&`$<>\\") { // Basic check
 			return fmt.Errorf("invalid characters in comment string")
 		}
 		args = append(args, "comment", comment)
 	}
-
 	cmd := exec.Command("sudo", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
