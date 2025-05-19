@@ -111,6 +111,7 @@ prompt_cors_origin() {
 
 download_backend() {
     log_info "下载后端可执行文件..."
+    mkdir -p "$INSTALL_DIR"
     curl -L --progress-bar "$BACKEND_URL" -o "$EXECUTABLE_PATH" || log_error_exit "下载失败，请检查网络。"
     chmod +x "$EXECUTABLE_PATH"
     log_info "下载完成并已赋予执行权限。"
