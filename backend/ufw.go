@@ -2,10 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"net"
+	"os"
 	"os/exec"
-	"strings"
+	"regexp"
 	"strconv"
+	"strings"
+	"time"
 )
 
 type UFWStatus struct {
@@ -13,347 +19,473 @@ type UFWStatus struct {
 	Rules  []string `json:"rules"`
 }
 
-func GetUFWStatus() (*UFWStatus, error) {
-	cmdCheck := exec.Command("which", "ufw")
-	if err := cmdCheck.Run(); err != nil {
-		return nil, fmt.Errorf("ufw command not found or not executable: %w", err)
+var (
+	reRuleNumberLine = regexp.MustCompile(`^\s*\[(\d+)\]\s+(.*)\S\s*$`)
+	reDigits         = regexp.MustCompile(`^\d+$`)
+)
+
+func ufwPath() (string, error) {
+	return exec.LookPath("ufw")
+}
+
+func shouldUseSudo() bool {
+	return os.Getenv("UFW_SUDO") == "1"
+}
+
+func ufwTimeout() time.Duration {
+	if v := os.Getenv("UFW_TIMEOUT_SEC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n < 60 {
+			return time.Duration(n) * time.Second
+		}
 	}
+	return 5 * time.Second
+}
 
-	cmd := exec.Command("sudo", "ufw", "status", "numbered")
-	var out bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
+type cmdResult struct {
+	Stdout   string
+	Stderr   string
+	ExitCode int
+}
 
-	err := cmd.Run()
+func runUFW(args ...string) (*cmdResult, error) {
+	path, err := ufwPath()
 	if err != nil {
-		stderrStr := stderr.String()
-		if strings.Contains(stderrStr, "Status: inactive") || strings.Contains(out.String(), "Status: inactive") {
+		return nil, fmt.Errorf("ufw not found: %w", err)
+	}
+	finalArgs := args
+	if shouldUseSudo() {
+		finalArgs = append([]string{path}, args...)
+		path = "sudo"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), ufwTimeout())
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, finalArgs...)
+	cmd.Env = append(os.Environ(), "LANG=C")
+	var out, er bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &er
+	err = cmd.Run()
+	res := &cmdResult{
+		Stdout: out.String(),
+		Stderr: er.String(),
+		ExitCode: func() int {
+			if err == nil {
+				return 0
+			}
+			var ee *exec.ExitError
+			if errors.As(err, &ee) {
+				return ee.ExitCode()
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				return -2
+			}
+			return -1
+		}(),
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return res, fmt.Errorf("ufw command timeout: %s %s", path, strings.Join(finalArgs, " "))
+	}
+	if err != nil {
+		return res, fmt.Errorf("ufw command failed: %s %s\nstderr: %s", path, strings.Join(finalArgs, " "), res.Stderr)
+	}
+	return res, nil
+}
+
+func validatePort(port string) error {
+	if port == "" {
+		return errors.New("port empty")
+	}
+	if strings.Contains(port, ":") {
+		parts := strings.SplitN(port, ":", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid port range: %s", port)
+		}
+		a, b := parts[0], parts[1]
+		if err := validatePort(a); err != nil {
+			return err
+		}
+		if err := validatePort(b); err != nil {
+			return err
+		}
+		ai, _ := strconv.Atoi(a)
+		bi, _ := strconv.Atoi(b)
+		if ai > bi {
+			return fmt.Errorf("invalid port range: start > end")
+		}
+		return nil
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("invalid port: %s", port)
+	}
+	return nil
+}
+
+func validateProto(p string) error {
+	if p == "" {
+		return nil
+	}
+	switch strings.ToLower(p) {
+	case "tcp", "udp":
+		return nil
+	default:
+		return fmt.Errorf("invalid protocol: %s", p)
+	}
+}
+
+func validateIPorCIDR(s string) error {
+	if s == "" {
+		return nil
+	}
+	if strings.Contains(s, "/") {
+		if _, _, err := net.ParseCIDR(s); err != nil {
+			return fmt.Errorf("invalid CIDR: %s", s)
+		}
+		return nil
+	}
+	if net.ParseIP(s) == nil {
+		return fmt.Errorf("invalid IP: %s", s)
+	}
+	return nil
+}
+
+func validateComment(c string) error {
+	if len(c) > 80 {
+		return fmt.Errorf("comment too long (<=80)")
+	}
+	if strings.ContainsAny(c, "\n\r\t`$&|;<>()\\\"'") {
+		return fmt.Errorf("comment contains illegal chars")
+	}
+	return nil
+}
+
+func GetUFWStatus() (*UFWStatus, error) {
+	res, err := runUFW("ufw", "status", "numbered")
+	if err != nil {
+		if strings.Contains(res.Stderr, "Status: inactive") || strings.Contains(res.Stdout, "Status: inactive") {
 			return &UFWStatus{Status: "inactive", Rules: []string{}}, nil
 		}
-		return nil, fmt.Errorf("failed to execute ufw status: %w\nStderr: %s", err, stderrStr)
+		if strings.Contains(res.Stdout, "inactive") {
+			return &UFWStatus{Status: "inactive", Rules: []string{}}, nil
+		}
+		return nil, err
 	}
-
-	output := out.String()
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-
-	if len(lines) == 0 {
-		return nil, fmt.Errorf("unexpected empty output from ufw status")
+	out := strings.TrimSpace(res.Stdout)
+	if out == "" {
+		return nil, fmt.Errorf("empty output from ufw status")
 	}
-
-	status := &UFWStatus{
-		Status: "unknown",
-		Rules:  []string{},
+	status := &UFWStatus{Status: "unknown", Rules: []string{}}
+	lines := strings.Split(out, "\n")
+	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "Status:") {
+		status.Status = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[0]), "Status:"))
 	}
-
-	if strings.HasPrefix(lines[0], "Status:") {
-		status.Status = strings.TrimSpace(strings.TrimPrefix(lines[0], "Status:"))
-	}
-
-	ruleStartIndex := -1
-	for i, line := range lines {
-		if strings.Contains(line, "Action") && strings.Contains(line, "From") {
-			ruleStartIndex = i + 1
-			if ruleStartIndex < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[ruleStartIndex]), "---") {
-				ruleStartIndex++
-			}
-			break
+	for _, ln := range lines {
+		ln = strings.TrimRight(ln, " ")
+		if m := reRuleNumberLine.FindStringSubmatch(ln); len(m) == 3 {
+			status.Rules = append(status.Rules, strings.TrimSpace(ln))
 		}
 	}
-
-	if ruleStartIndex == -1 {
-		if status.Status != "unknown" && len(lines) > 1 {
-			ruleStartIndex = 1
-		} else if status.Status == "unknown" && len(lines) > 0 {
-			ruleStartIndex = 0
-		}
-	}
-
-	if ruleStartIndex != -1 && ruleStartIndex < len(lines) {
-		status.Rules = lines[ruleStartIndex:]
-		for i := range status.Rules {
-			status.Rules[i] = strings.TrimSpace(status.Rules[i])
-		}
-	}
-
 	return status, nil
 }
 
 func AllowUFWPort(rule string, comment string) error {
+	rule = strings.TrimSpace(rule)
 	if rule == "" {
 		return fmt.Errorf("rule cannot be empty")
 	}
-
-	if strings.ContainsAny(rule, ";|&`$<>\\") {
-		return fmt.Errorf("invalid characters in rule string")
-	}
-
-	args := []string{"ufw", "allow"}
-	args = append(args, strings.Fields(rule)...)
-	if comment != "" {
-		if strings.ContainsAny(comment, "'\";|&`$<>\\") {
-			return fmt.Errorf("invalid characters in comment string")
+	parts := strings.Split(rule, "/")
+	switch len(parts) {
+	case 1:
+		if _, err := strconv.Atoi(parts[0]); err == nil || strings.Contains(parts[0], ":") {
+			if err := validatePort(parts[0]); err != nil {
+				return err
+			}
 		}
+	case 2:
+		if parts[0] != "" {
+			if _, err := strconv.Atoi(parts[0]); err == nil || strings.Contains(parts[0], ":") {
+				if err := validatePort(parts[0]); err != nil {
+					return err
+				}
+			}
+		}
+		if err := validateProto(parts[1]); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("invalid rule format: %s", rule)
+	}
+	if comment != "" {
+		if err := validateComment(comment); err != nil {
+			return err
+		}
+	}
+	args := []string{"ufw", "allow", rule}
+	if comment != "" {
 		args = append(args, "comment", comment)
 	}
-
-	cmd := exec.Command("sudo", args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		return fmt.Errorf("failed to execute ufw command '%s': %w\nStderr: %s", strings.Join(args, " "), err, stderr.String())
+	if _, err := runUFW(args...); err != nil {
+		if strings.Contains(err.Error(), "Skipping adding existing rule") {
+			return nil
+		}
+		return err
 	}
-
-	fmt.Printf("Successfully executed: %s\n", strings.Join(cmd.Args, " "))
 	return nil
 }
 
 func DenyUFWPort(rule string, comment string) error {
+	rule = strings.TrimSpace(rule)
 	if rule == "" {
 		return fmt.Errorf("rule cannot be empty")
 	}
-	if strings.ContainsAny(rule, ";|&`$<>\\") {
-		return fmt.Errorf("invalid characters in rule string")
-	}
-
-	args := []string{"ufw", "deny"}
-	args = append(args, strings.Fields(rule)...)
-	if comment != "" {
-		if strings.ContainsAny(comment, "'\";|&`$<>\\") {
-			return fmt.Errorf("invalid characters in comment string")
+	parts := strings.Split(rule, "/")
+	switch len(parts) {
+	case 1:
+		if _, err := strconv.Atoi(parts[0]); err == nil || strings.Contains(parts[0], ":") {
+			if err := validatePort(parts[0]); err != nil {
+				return err
+			}
 		}
+	case 2:
+		if parts[0] != "" {
+			if _, err := strconv.Atoi(parts[0]); err == nil || strings.Contains(parts[0], ":") {
+				if err := validatePort(parts[0]); err != nil {
+					return err
+				}
+			}
+		}
+		if err := validateProto(parts[1]); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("invalid rule format: %s", rule)
+	}
+	if comment != "" {
+		if err := validateComment(comment); err != nil {
+			return err
+		}
+	}
+	args := []string{"ufw", "deny", rule}
+	if comment != "" {
 		args = append(args, "comment", comment)
 	}
-
-	cmd := exec.Command("sudo", args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		return fmt.Errorf("failed to execute ufw command '%s': %w\nStderr: %s", strings.Join(args, " "), err, stderr.String())
+	if _, err := runUFW(args...); err != nil {
+		if strings.Contains(err.Error(), "Skipping adding existing rule") {
+			return nil
+		}
+		return err
 	}
-
-	fmt.Printf("Successfully executed: %s\n", strings.Join(cmd.Args, " "))
 	return nil
 }
 
 func DeleteUFWByNumber(ruleNumber string) error {
-	for _, r := range ruleNumber {
-		if r < '0' || r > '9' {
-			return fmt.Errorf("invalid rule number: must be numeric")
-		}
+	ruleNumber = strings.TrimSpace(ruleNumber)
+	if !reDigits.MatchString(ruleNumber) || ruleNumber == "0" {
+		return fmt.Errorf("invalid rule number: %s", ruleNumber)
 	}
-	if ruleNumber == "" || ruleNumber == "0" {
-		return fmt.Errorf("invalid rule number: cannot be empty or zero")
-	}
-
-	cmd := exec.Command("sudo", "ufw", "delete", ruleNumber)
-	cmd.Stdin = strings.NewReader("y\n")
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
+	res, err := runUFW("ufw", "delete", ruleNumber)
 	if err != nil {
-		stderrStr := stderr.String()
-		if strings.Contains(stderrStr, "WARN: Rule not found") {
+		if strings.Contains(res.Stderr, "Rule not found") || strings.Contains(err.Error(), "Rule not found") {
 			return fmt.Errorf("rule number %s not found", ruleNumber)
 		}
-		return fmt.Errorf("failed to execute ufw delete rule number %s: %w\nStderr: %s", ruleNumber, err, stderrStr)
+		return err
 	}
-
-	fmt.Printf("Successfully executed: %s (with confirmation 'y')\n", strings.Join(cmd.Args, " "))
+	_ = res
 	return nil
 }
 
 func EnableUFW() error {
-	cmd := exec.Command("sudo", "ufw", "enable")
-	cmd.Stdin = strings.NewReader("y\n")
-
-	var stderr bytes.Buffer
-	var out bytes.Buffer
-	cmd.Stderr = &stderr
-	cmd.Stdout = &out
-
-	err := cmd.Run()
+	res, err := runUFW("ufw", "enable")
 	if err != nil {
-		stderrStr := stderr.String()
-		outStr := out.String()
-		if strings.Contains(stderrStr, "Firewall is already active") || strings.Contains(outStr, "Firewall is already active") {
-			fmt.Println("UFW is already active.")
+		if strings.Contains(res.Stderr, "already active") || strings.Contains(res.Stdout, "already active") {
 			return nil
 		}
-		return fmt.Errorf("failed to execute ufw enable: %w\nStderr: %s\nStdout: %s", err, stderrStr, outStr)
+		return err
 	}
-
-	fmt.Printf("Successfully executed: %s (with confirmation 'y')\n", strings.Join(cmd.Args, " "))
-	return nil
-}
-
-func AllowUFWFromIP(ipAddress string, portProto string, comment string) error {
-	if ipAddress == "" {
-		return fmt.Errorf("ip address cannot be empty")
-	}
-	if strings.ContainsAny(ipAddress, ";|&`$<>\\ ") {
-		return fmt.Errorf("invalid characters in ip address string")
-	}
-	if strings.ContainsAny(portProto, ";|&`$<>\\") {
-		return fmt.Errorf("invalid characters in port/protocol string")
-	}
-
-	args := []string{"ufw", "allow", "from", ipAddress}
-	if portProto != "" {
-		if strings.Contains(portProto, "/") {
-			parts := strings.SplitN(portProto, "/", 2)
-			port := parts[0]
-			protocol := parts[1]
-			args = append(args, "to", "any", "port", port)
-			if protocol != "" {
-				args = append(args, "proto", protocol)
-			}
-		} else {
-			if _, err := strconv.Atoi(portProto); err == nil {
-				args = append(args, "to", "any", "port", portProto)
-			} else {
-				args = append(args, "proto", portProto)
-			}
-		}
-	}
-	if comment != "" {
-		if strings.ContainsAny(comment, "'\";|&`$<>\\") { // Basic check
-			return fmt.Errorf("invalid characters in comment string")
-		}
-		args = append(args, "comment", comment)
-	}
-	cmd := exec.Command("sudo", args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		return fmt.Errorf("failed to execute ufw rule '%s': %w\nStderr: %s", strings.Join(args, " "), err, stderr.String())
-	}
-
-	fmt.Printf("Successfully executed: %s\n", strings.Join(cmd.Args, " "))
-	return nil
-}
-
-func DenyUFWFromIP(ipAddress string, portProto string, comment string) error {
-	if ipAddress == "" {
-		return fmt.Errorf("ip address cannot be empty")
-	}
-	if strings.ContainsAny(ipAddress, ";|&`$<>\\ ") {
-		return fmt.Errorf("invalid characters in ip address string")
-	}
-	if strings.ContainsAny(portProto, ";|&`$<>\\") {
-		return fmt.Errorf("invalid characters in port/protocol string")
-	}
-
-	args := []string{"ufw", "deny", "from", ipAddress}
-	if portProto != "" {
-		args = append(args, "to", "any", "port", portProto)
-	}
-	if comment != "" {
-		if strings.ContainsAny(comment, "'\";|&`$<>\\") {
-			return fmt.Errorf("invalid characters in comment string")
-		}
-		args = append(args, "comment", comment)
-	}
-
-	cmd := exec.Command("sudo", args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		return fmt.Errorf("failed to execute ufw rule '%s': %w\nStderr: %s", strings.Join(args, " "), err, stderr.String())
-	}
-
-	fmt.Printf("Successfully executed: %s\n", strings.Join(cmd.Args, " "))
-	return nil
-}
-
-func RouteAllowUFW(protocol, fromIP, toIP, port, comment string) error {
-	if protocol == "" && port == "" { 
-	}
-	if strings.ContainsAny(protocol, ";|&`$<>\\ ") { 
-		return fmt.Errorf("invalid characters in protocol string")
-	}
-	if strings.ContainsAny(fromIP, ";|&`$<>\\ ") {
-		return fmt.Errorf("invalid characters in from IP string")
-	}
-	if strings.ContainsAny(toIP, ";|&`$<>\\ ") {
-		return fmt.Errorf("invalid characters in to IP string")
-	}
-	if strings.ContainsAny(port, ";|&`$<>\\ ") { 
-		return fmt.Errorf("invalid characters in port string")
-	}
-
-
-	args := []string{"ufw", "route", "allow"}
-
-
-	if protocol != "" {
-		args = append(args, "proto", protocol)
-	}
-
-	if fromIP != "" {
-		args = append(args, "from", fromIP)
-	} else {
-		args = append(args, "from", "any")
-	}
-
-	if toIP != "" {
-		args = append(args, "to", toIP)
-	} else {
-		args = append(args, "to", "any")
-	}
-	
-	if port != "" {
-		args = append(args, "port", port)
-	}
-
-	if comment != "" {
-		if strings.ContainsAny(comment, "'\";|&`$<>\\") {
-			return fmt.Errorf("invalid characters in comment string")
-		}
-		args = append(args, "comment", comment)
-	}
-
-	cmd := exec.Command("sudo", args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		return fmt.Errorf("failed to execute ufw command '%s': %w\nStderr: %s", strings.Join(args, " "), err, stderr.String())
-	}
-
-	fmt.Printf("Successfully executed: %s\n", strings.Join(cmd.Args, " "))
 	return nil
 }
 
 func DisableUFW() error {
-	cmd := exec.Command("sudo", "ufw", "disable")
-	var stderr bytes.Buffer
-	var out bytes.Buffer
-	cmd.Stderr = &stderr
-	cmd.Stdout = &out
-
-	err := cmd.Run()
+	res, err := runUFW("ufw", "disable")
 	if err != nil {
-		stderrStr := stderr.String()
-		outStr := out.String()
-		if strings.Contains(stderrStr, "Firewall is not active") || strings.Contains(outStr, "Firewall is not active") {
-			fmt.Println("UFW is already inactive.")
+		if strings.Contains(res.Stderr, "not active") || strings.Contains(res.Stdout, "not active") {
 			return nil
 		}
-		return fmt.Errorf("failed to execute ufw disable: %w\nStderr: %s\nStdout: %s", err, stderrStr, outStr)
+		return err
 	}
+	return nil
+}
 
-	fmt.Printf("Successfully executed: %s\n", strings.Join(cmd.Args, " "))
+func AllowUFWFromIP(ipAddress string, portProto string, comment string) error {
+	ipAddress = strings.TrimSpace(ipAddress)
+	if ipAddress == "" {
+		return fmt.Errorf("ip address cannot be empty")
+	}
+	if err := validateIPorCIDR(ipAddress); err != nil {
+		return err
+	}
+	pp := strings.TrimSpace(portProto)
+	var port, proto string
+	if pp != "" {
+		if strings.Contains(pp, "/") {
+			parts := strings.SplitN(pp, "/", 2)
+			port = strings.TrimSpace(parts[0])
+			proto = strings.TrimSpace(parts[1])
+		} else {
+			if _, err := strconv.Atoi(pp); err == nil || strings.Contains(pp, ":") {
+				port = pp
+			} else {
+				proto = pp
+			}
+		}
+	}
+	if port != "" {
+		if err := validatePort(port); err != nil {
+			return err
+		}
+	}
+	if proto != "" {
+		if err := validateProto(proto); err != nil {
+			return err
+		}
+	}
+	if comment != "" {
+		if err := validateComment(comment); err != nil {
+			return err
+		}
+	}
+	args := []string{"ufw", "allow", "from", ipAddress, "to", "any"}
+	if port != "" {
+		args = append(args, "port", port)
+	}
+	if proto != "" {
+		args = append(args, "proto", proto)
+	}
+	if comment != "" {
+		args = append(args, "comment", comment)
+	}
+	if _, err := runUFW(args...); err != nil {
+		if strings.Contains(err.Error(), "Skipping adding existing rule") {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func DenyUFWFromIP(ipAddress string, portProto string, comment string) error {
+	ipAddress = strings.TrimSpace(ipAddress)
+	if ipAddress == "" {
+		return fmt.Errorf("ip address cannot be empty")
+	}
+	if err := validateIPorCIDR(ipAddress); err != nil {
+		return err
+	}
+	pp := strings.TrimSpace(portProto)
+	var port, proto string
+	if pp != "" {
+		if strings.Contains(pp, "/") {
+			parts := strings.SplitN(pp, "/", 2)
+			port = strings.TrimSpace(parts[0])
+			proto = strings.TrimSpace(parts[1])
+		} else {
+			if _, err := strconv.Atoi(pp); err == nil || strings.Contains(pp, ":") {
+				port = pp
+			} else {
+				proto = pp
+			}
+		}
+	}
+	if port != "" {
+		if err := validatePort(port); err != nil {
+			return err
+		}
+	}
+	if proto != "" {
+		if err := validateProto(proto); err != nil {
+			return err
+		}
+	}
+	if comment != "" {
+		if err := validateComment(comment); err != nil {
+			return err
+		}
+	}
+	args := []string{"ufw", "deny", "from", ipAddress, "to", "any"}
+	if port != "" {
+		args = append(args, "port", port)
+	}
+	if proto != "" {
+		args = append(args, "proto", proto)
+	}
+	if comment != "" {
+		args = append(args, "comment", comment)
+	}
+	if _, err := runUFW(args...); err != nil {
+		if strings.Contains(err.Error(), "Skipping adding existing rule") {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func RouteAllowUFW(protocol, fromIP, toIP, port, comment string) error {
+	protocol = strings.TrimSpace(protocol)
+	fromIP = strings.TrimSpace(fromIP)
+	toIP = strings.TrimSpace(toIP)
+	port = strings.TrimSpace(port)
+	comment = strings.TrimSpace(comment)
+	if protocol == "" && port == "" {
+		return fmt.Errorf("invalid request: protocol or port required")
+	}
+	if protocol != "" {
+		if err := validateProto(protocol); err != nil {
+			return err
+		}
+	}
+	if fromIP != "" && fromIP != "any" {
+		if err := validateIPorCIDR(fromIP); err != nil {
+			return fmt.Errorf("from ip invalid: %v", err)
+		}
+	}
+	if toIP != "" && toIP != "any" {
+		if err := validateIPorCIDR(toIP); err != nil {
+			return fmt.Errorf("to ip invalid: %v", err)
+		}
+	}
+	if port != "" {
+		if err := validatePort(port); err != nil {
+			return err
+		}
+	}
+	if comment != "" {
+		if err := validateComment(comment); err != nil {
+			return err
+		}
+	}
+	args := []string{"ufw", "route", "allow"}
+	if protocol != "" {
+		args = append(args, "proto", protocol)
+	}
+	if fromIP == "" {
+		fromIP = "any"
+	}
+	if toIP == "" {
+		toIP = "any"
+	}
+	args = append(args, "from", fromIP, "to", toIP)
+	if port != "" {
+		args = append(args, "port", port)
+	}
+	if comment != "" {
+		args = append(args, "comment", comment)
+	}
+	if _, err := runUFW(args...); err != nil {
+		if strings.Contains(err.Error(), "Skipping adding existing rule") {
+			return nil
+		}
+		return err
+	}
 	return nil
 }

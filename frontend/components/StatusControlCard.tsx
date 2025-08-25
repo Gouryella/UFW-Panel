@@ -2,7 +2,6 @@
 
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Loader2 } from "lucide-react";
 
 interface StatusControlCardProps {
   ufwStatus: string | null;
@@ -20,7 +19,7 @@ export default function StatusControlCard({
   const statusColor = ufwStatus === 'active' ? 'text-green-600' : 'text-red-600';
 
   return (
-    <Card>
+    <Card className="w-full max-w-md h-35">
       <CardHeader>
         <CardTitle>UFW Status & Control</CardTitle>
       </CardHeader>
@@ -30,7 +29,11 @@ export default function StatusControlCard({
             <strong>Status:</strong>{' '}
             {ufwStatus !== null ? (
               <span className={`font-semibold ${statusColor}`}>
-                {ufwStatus}
+                {isSubmitting ? (
+                    "-"
+                  ) : (
+                    <span>{ufwStatus ?? "—"}</span>
+                  )}
               </span>
             ) : (
               <span className="text-muted-foreground">Loading...</span>
@@ -43,7 +46,6 @@ export default function StatusControlCard({
               variant="default"
               size="sm"
             >
-              {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
               Enable
             </Button>
             <Button
@@ -52,7 +54,6 @@ export default function StatusControlCard({
               variant="destructive"
               size="sm"
             >
-              {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
               Disable
             </Button>
           </div>

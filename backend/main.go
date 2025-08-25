@@ -1,21 +1,22 @@
 package main
 
 import (
-	"log"
-	"net/http"
-	"os"
-	"strings"
-	"time"
-	"sync"
-	"fmt"
-	"math/big"
-	"net"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
+	"log"
+	"math/big"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
 	"strconv"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -37,7 +38,7 @@ type failInfo struct {
 var (
 	failedAttempts sync.Map
 	blockedIPs     sync.Map
-	failWindow = time.Minute
+	failWindow     = time.Minute
 )
 
 var maxFails int
@@ -120,7 +121,6 @@ func ensureSelfSignedCert(certPath, keyPath string) error {
 	return nil
 }
 
-
 func AuthMiddleware() gin.HandlerFunc {
 	expectedAPIKey = os.Getenv("UFW_API_KEY")
 	if expectedAPIKey == "" {
@@ -128,6 +128,11 @@ func AuthMiddleware() gin.HandlerFunc {
 	}
 
 	return func(c *gin.Context) {
+		if c.Request.Method == http.MethodOptions {
+			c.Next()
+			return
+		}
+
 		ip := c.ClientIP()
 
 		if _, blocked := blockedIPs.Load(ip); blocked {
@@ -169,33 +174,64 @@ func AuthMiddleware() gin.HandlerFunc {
 	}
 }
 
-
 func main() {
-	err := godotenv.Load()
-	if err != nil {
+	if err := godotenv.Load(); err != nil {
 		log.Println("Warning: Could not load .env file:", err)
 	}
 
 	router := gin.Default()
 
 	allowedOriginsEnv := os.Getenv("CORS_ALLOWED_ORIGINS")
-	var allowedOrigins []string
+	rawItems := []string{}
 	if allowedOriginsEnv != "" {
-		allowedOrigins = strings.Split(allowedOriginsEnv, ",")
-		for i := range allowedOrigins {
-			allowedOrigins[i] = strings.TrimSpace(allowedOrigins[i])
+		for _, v := range strings.Split(allowedOriginsEnv, ",") {
+			if vv := strings.TrimSpace(v); vv != "" {
+				rawItems = append(rawItems, vv)
+			}
 		}
-	} else {
-		allowedOrigins = []string{"http://localhost:3000"}
-		log.Println("Warning: CORS_ALLOWED_ORIGINS environment variable not set. Defaulting to 'http://localhost:3000'")
+	}
+	if len(rawItems) == 0 {
+		rawItems = []string{"http://localhost:3000"}
+		log.Println("Warning: CORS_ALLOWED_ORIGINS not set. Defaulting to http://localhost:3000")
+	}
+	log.Printf("CORS raw allow list: %v", rawItems)
+
+	type originRule struct {
+		exact string
+		glob  string
+	}
+	var rules []originRule
+	for _, it := range rawItems {
+		if strings.HasPrefix(it, "*.") {
+			rules = append(rules, originRule{glob: strings.TrimPrefix(it, "*.")})
+		} else {
+			rules = append(rules, originRule{exact: it})
+		}
 	}
 
-	log.Printf("Configuring CORS with allowed origins: %v", allowedOrigins)
+	allowOriginFunc := func(origin string) bool {
+		for _, r := range rules {
+			if r.exact != "" && origin == r.exact {
+				return true
+			}
+		}
+		u, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+		host := u.Hostname()
+		for _, r := range rules {
+			if r.glob != "" && (host == r.glob || strings.HasSuffix(host, "."+r.glob)) {
+				return true
+			}
+		}
+		return false
+	}
 
 	router.Use(cors.New(cors.Config{
-		AllowOrigins:     allowedOrigins,
+		AllowOriginFunc:  allowOriginFunc,
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "X-API-KEY"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "X-API-KEY", "Authorization"},
 		ExposeHeaders:    []string{"Content-Length"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
@@ -221,20 +257,16 @@ func main() {
 			Rule    string `json:"rule" binding:"required"`
 			Comment string `json:"comment"`
 		}
-
 		authorized.POST("/rules/allow", func(c *gin.Context) {
 			var req AllowRuleRequest
 			if err := c.ShouldBindJSON(&req); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body", "details": err.Error()})
 				return
 			}
-
-			err := AllowUFWPort(req.Rule, req.Comment)
-			if err != nil {
+			if err := AllowUFWPort(req.Rule, req.Comment); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add allow rule", "details": err.Error()})
 				return
 			}
-
 			c.JSON(http.StatusOK, gin.H{"message": "Rule added successfully", "rule": req.Rule, "comment": req.Comment})
 		})
 
@@ -242,20 +274,16 @@ func main() {
 			Rule    string `json:"rule" binding:"required"`
 			Comment string `json:"comment"`
 		}
-
 		authorized.POST("/rules/deny", func(c *gin.Context) {
 			var req DenyRuleRequest
 			if err := c.ShouldBindJSON(&req); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body", "details": err.Error()})
 				return
 			}
-
-			err := DenyUFWPort(req.Rule, req.Comment)
-			if err != nil {
+			if err := DenyUFWPort(req.Rule, req.Comment); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add deny rule", "details": err.Error()})
 				return
 			}
-
 			c.JSON(http.StatusOK, gin.H{"message": "Deny rule added successfully", "rule": req.Rule, "comment": req.Comment})
 		})
 
@@ -265,9 +293,7 @@ func main() {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Rule number parameter is required"})
 				return
 			}
-
-			err := DeleteUFWByNumber(ruleNumber)
-			if err != nil {
+			if err := DeleteUFWByNumber(ruleNumber); err != nil {
 				if strings.Contains(err.Error(), "not found") {
 					c.JSON(http.StatusNotFound, gin.H{"error": "Rule not found", "details": err.Error()})
 				} else {
@@ -275,14 +301,12 @@ func main() {
 				}
 				return
 			}
-
 			c.JSON(http.StatusOK, gin.H{"message": "Rule deleted successfully", "rule_number": ruleNumber})
 		})
 
 		authorized.POST("/enable", func(c *gin.Context) {
 			log.Println("Attempting to enable UFW via API endpoint...")
-			err := EnableUFW()
-			if err != nil {
+			if err := EnableUFW(); err != nil {
 				log.Printf("Error enabling UFW via API: %v", err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to enable UFW", "details": err.Error()})
 				return
@@ -292,8 +316,7 @@ func main() {
 		})
 
 		authorized.POST("/disable", func(c *gin.Context) {
-			err := DisableUFW()
-			if err != nil {
+			if err := DisableUFW(); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to disable UFW", "details": err.Error()})
 				return
 			}
@@ -305,65 +328,52 @@ func main() {
 			PortProtocol string `json:"port_protocol"`
 			Comment      string `json:"comment"`
 		}
-
 		authorized.POST("/rules/allow/ip", func(c *gin.Context) {
 			var req IPRuleRequest
 			if err := c.ShouldBindJSON(&req); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body", "details": err.Error()})
 				return
 			}
-
-			err := AllowUFWFromIP(req.IPAddress, req.PortProtocol, req.Comment)
-			if err != nil {
+			if err := AllowUFWFromIP(req.IPAddress, req.PortProtocol, req.Comment); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add allow rule from IP", "details": err.Error()})
 				return
 			}
-
 			c.JSON(http.StatusOK, gin.H{"message": "Allow rule from IP added successfully", "ip_address": req.IPAddress, "port_protocol": req.PortProtocol, "comment": req.Comment})
 		})
-
 		authorized.POST("/rules/deny/ip", func(c *gin.Context) {
 			var req IPRuleRequest
 			if err := c.ShouldBindJSON(&req); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body", "details": err.Error()})
 				return
 			}
-
-			err := DenyUFWFromIP(req.IPAddress, req.PortProtocol, req.Comment)
-			if err != nil {
+			if err := DenyUFWFromIP(req.IPAddress, req.PortProtocol, req.Comment); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add deny rule from IP", "details": err.Error()})
 				return
 			}
-
 			c.JSON(http.StatusOK, gin.H{"message": "Deny rule from IP added successfully", "ip_address": req.IPAddress, "port_protocol": req.PortProtocol, "comment": req.Comment})
 		})
 
 		type RouteAllowRuleRequest struct {
-			Protocol string `json:"protocol"` // e.g., tcp, udp
-			FromIP   string `json:"from_ip"`  // Defaults to "any" if empty
-			ToIP     string `json:"to_ip"`    // Defaults to "any" if empty
-			Port     string `json:"port"`     // e.g., 80, 443
+			Protocol string `json:"protocol"`
+			FromIP   string `json:"from_ip"`
+			ToIP     string `json:"to_ip"`
+			Port     string `json:"port"`
 			Comment  string `json:"comment"`
 		}
-
 		authorized.POST("/rules/route/allow", func(c *gin.Context) {
 			var req RouteAllowRuleRequest
 			if err := c.ShouldBindJSON(&req); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body", "details": err.Error()})
 				return
 			}
-
 			if req.Protocol == "" && req.Port == "" {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: Protocol or Port must be specified for a route rule."})
 				return
 			}
-
-			err := RouteAllowUFW(req.Protocol, req.FromIP, req.ToIP, req.Port, req.Comment)
-			if err != nil {
+			if err := RouteAllowUFW(req.Protocol, req.FromIP, req.ToIP, req.Port, req.Comment); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add route allow rule", "details": err.Error()})
 				return
 			}
-
 			c.JSON(http.StatusOK, gin.H{
 				"message":  "Route allow rule added successfully",
 				"protocol": req.Protocol,
@@ -373,14 +383,12 @@ func main() {
 				"comment":  req.Comment,
 			})
 		})
-
 	}
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "30737"
 	}
-
 	apiPort := os.Getenv("PORT")
 	if apiPort == "" {
 		apiPort = "30737"
@@ -388,8 +396,7 @@ func main() {
 	apiRule := apiPort + "/tcp"
 
 	log.Printf("Attempting to add allow rule for API port %s during startup...", apiRule)
-	startupErr := AllowUFWPort(apiRule, "")
-	if startupErr != nil {
+	if startupErr := AllowUFWPort(apiRule, ""); startupErr != nil {
 		if strings.Contains(startupErr.Error(), "Skipping adding existing rule") {
 			log.Printf("Rule for API port '%s' already exists or skipping message detected.", apiRule)
 		} else {
@@ -408,8 +415,7 @@ func main() {
 	}
 
 	log.Printf("Attempting to start HTTPS server on port %s using %s and %s", port, certPath, keyPath)
-	err = router.RunTLS(":"+port, certPath, keyPath)
-	if err != nil {
+	if err := router.RunTLS(":"+port, certPath, keyPath); err != nil {
 		log.Fatalf("FATAL: Failed to start HTTPS server: %v", err)
 	}
 }
