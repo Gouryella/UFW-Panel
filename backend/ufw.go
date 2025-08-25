@@ -20,8 +20,9 @@ type UFWStatus struct {
 }
 
 var (
-	reRuleNumberLine = regexp.MustCompile(`^\s*\[(\d+)\]\s+(.*)\S\s*$`)
+	reRuleNumberLine = regexp.MustCompile(`^\s*\[\s*\d+\s*\]\s+.+$`)
 	reDigits         = regexp.MustCompile(`^\d+$`)
+	reHeaderDashes   = regexp.MustCompile(`^-{3,}$`)
 )
 
 func ufwPath() (string, error) {
@@ -89,6 +90,11 @@ func runUFW(args ...string) (*cmdResult, error) {
 		return res, fmt.Errorf("ufw command failed: %s %s\nstderr: %s", path, strings.Join(finalArgs, " "), res.Stderr)
 	}
 	return res, nil
+}
+
+func runUFWForce(args ...string) (*cmdResult, error) {
+	args = append([]string{"--force"}, args...)
+	return runUFW(args...)
 }
 
 func validatePort(port string) error {
@@ -160,31 +166,61 @@ func validateComment(c string) error {
 }
 
 func GetUFWStatus() (*UFWStatus, error) {
-	res, err := runUFW("ufw", "status", "numbered")
+	res, err := runUFW("status", "numbered")
 	if err != nil {
-		if strings.Contains(res.Stderr, "Status: inactive") || strings.Contains(res.Stdout, "Status: inactive") {
-			return &UFWStatus{Status: "inactive", Rules: []string{}}, nil
-		}
-		if strings.Contains(res.Stdout, "inactive") {
+		if res != nil && (strings.Contains(res.Stderr, "Status: inactive") || strings.Contains(res.Stdout, "Status: inactive") || strings.Contains(res.Stdout, "inactive")) {
 			return &UFWStatus{Status: "inactive", Rules: []string{}}, nil
 		}
 		return nil, err
 	}
+
 	out := strings.TrimSpace(res.Stdout)
 	if out == "" {
 		return nil, fmt.Errorf("empty output from ufw status")
 	}
+
+	lines := strings.Split(strings.ReplaceAll(out, "\r\n", "\n"), "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " \t")
+	}
+
 	status := &UFWStatus{Status: "unknown", Rules: []string{}}
-	lines := strings.Split(out, "\n")
 	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "Status:") {
 		status.Status = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[0]), "Status:"))
 	}
+
 	for _, ln := range lines {
-		ln = strings.TrimRight(ln, " ")
-		if m := reRuleNumberLine.FindStringSubmatch(ln); len(m) == 3 {
+		if reRuleNumberLine.MatchString(ln) {
 			status.Rules = append(status.Rules, strings.TrimSpace(ln))
 		}
 	}
+
+	if len(status.Rules) == 0 {
+		start := -1
+		for i, ln := range lines {
+			s := strings.ToLower(strings.TrimSpace(ln))
+			if strings.Contains(s, "action") && strings.Contains(s, "from") {
+				start = i + 1
+				break
+			}
+		}
+		if start != -1 {
+			if start < len(lines) && reHeaderDashes.MatchString(strings.TrimSpace(lines[start])) {
+				start++
+			}
+			for i := start; i < len(lines); i++ {
+				l := strings.TrimSpace(lines[i])
+				if l == "" {
+					continue
+				}
+				if strings.HasPrefix(strings.ToLower(l), "logging") {
+					continue
+				}
+				status.Rules = append(status.Rules, l)
+			}
+		}
+	}
+
 	return status, nil
 }
 
@@ -220,7 +256,7 @@ func AllowUFWPort(rule string, comment string) error {
 			return err
 		}
 	}
-	args := []string{"ufw", "allow", rule}
+	args := []string{"allow", rule}
 	if comment != "" {
 		args = append(args, "comment", comment)
 	}
@@ -265,7 +301,7 @@ func DenyUFWPort(rule string, comment string) error {
 			return err
 		}
 	}
-	args := []string{"ufw", "deny", rule}
+	args := []string{"deny", rule}
 	if comment != "" {
 		args = append(args, "comment", comment)
 	}
@@ -283,9 +319,9 @@ func DeleteUFWByNumber(ruleNumber string) error {
 	if !reDigits.MatchString(ruleNumber) || ruleNumber == "0" {
 		return fmt.Errorf("invalid rule number: %s", ruleNumber)
 	}
-	res, err := runUFW("ufw", "delete", ruleNumber)
+	res, err := runUFWForce("delete", ruleNumber)
 	if err != nil {
-		if strings.Contains(res.Stderr, "Rule not found") || strings.Contains(err.Error(), "Rule not found") {
+		if res != nil && (strings.Contains(res.Stderr, "Rule not found") || strings.Contains(err.Error(), "Rule not found")) {
 			return fmt.Errorf("rule number %s not found", ruleNumber)
 		}
 		return err
@@ -295,9 +331,9 @@ func DeleteUFWByNumber(ruleNumber string) error {
 }
 
 func EnableUFW() error {
-	res, err := runUFW("ufw", "enable")
+	res, err := runUFWForce("enable")
 	if err != nil {
-		if strings.Contains(res.Stderr, "already active") || strings.Contains(res.Stdout, "already active") {
+		if res != nil && (strings.Contains(res.Stderr, "already active") || strings.Contains(res.Stdout, "already active")) {
 			return nil
 		}
 		return err
@@ -306,9 +342,9 @@ func EnableUFW() error {
 }
 
 func DisableUFW() error {
-	res, err := runUFW("ufw", "disable")
+	res, err := runUFW("disable")
 	if err != nil {
-		if strings.Contains(res.Stderr, "not active") || strings.Contains(res.Stdout, "not active") {
+		if res != nil && (strings.Contains(res.Stderr, "not active") || strings.Contains(res.Stdout, "not active")) {
 			return nil
 		}
 		return err
@@ -354,7 +390,7 @@ func AllowUFWFromIP(ipAddress string, portProto string, comment string) error {
 			return err
 		}
 	}
-	args := []string{"ufw", "allow", "from", ipAddress, "to", "any"}
+	args := []string{"allow", "from", ipAddress, "to", "any"}
 	if port != "" {
 		args = append(args, "port", port)
 	}
@@ -411,7 +447,7 @@ func DenyUFWFromIP(ipAddress string, portProto string, comment string) error {
 			return err
 		}
 	}
-	args := []string{"ufw", "deny", "from", ipAddress, "to", "any"}
+	args := []string{"deny", "from", ipAddress, "to", "any"}
 	if port != "" {
 		args = append(args, "port", port)
 	}
@@ -464,7 +500,7 @@ func RouteAllowUFW(protocol, fromIP, toIP, port, comment string) error {
 			return err
 		}
 	}
-	args := []string{"ufw", "route", "allow"}
+	args := []string{"route", "allow"}
 	if protocol != "" {
 		args = append(args, "proto", protocol)
 	}
