@@ -389,11 +389,7 @@ func main() {
 	if port == "" {
 		port = "30737"
 	}
-	apiPort := os.Getenv("PORT")
-	if apiPort == "" {
-		apiPort = "30737"
-	}
-	apiRule := apiPort + "/tcp"
+	apiRule := port + "/tcp"
 
 	log.Printf("Attempting to add allow rule for API port %s during startup...", apiRule)
 	if startupErr := AllowUFWPort(apiRule, ""); startupErr != nil {
@@ -408,10 +404,26 @@ func main() {
 
 	log.Printf("Starting server on port %s", port)
 
-	certPath := certFileName
-	keyPath := keyFileName
-	if err := ensureSelfSignedCert(certPath, keyPath); err != nil {
-		log.Fatalf("FATAL: Failed to ensure self-signed certificate: %v", err)
+	// Check for custom TLS certificate paths
+	certPath := os.Getenv("TLS_CERT_PATH")
+	keyPath := os.Getenv("TLS_KEY_PATH")
+	
+	if certPath != "" && keyPath != "" {
+		// Validate custom certificate files exist
+		if _, err := os.Stat(certPath); os.IsNotExist(err) {
+			log.Fatalf("FATAL: Custom certificate file not found: %s", certPath)
+		}
+		if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+			log.Fatalf("FATAL: Custom private key file not found: %s", keyPath)
+		}
+		log.Printf("Using custom TLS certificate: %s and key: %s", certPath, keyPath)
+	} else {
+		// Use self-signed certificate
+		certPath = certFileName
+		keyPath = keyFileName
+		if err := ensureSelfSignedCert(certPath, keyPath); err != nil {
+			log.Fatalf("FATAL: Failed to ensure self-signed certificate: %v", err)
+		}
 	}
 
 	log.Printf("Attempting to start HTTPS server on port %s using %s and %s", port, certPath, keyPath)

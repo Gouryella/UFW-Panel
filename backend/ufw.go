@@ -35,7 +35,7 @@ func shouldUseSudo() bool {
 
 func ufwTimeout() time.Duration {
 	if v := os.Getenv("UFW_TIMEOUT_SEC"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n < 60 {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 60 {
 			return time.Duration(n) * time.Second
 		}
 	}
