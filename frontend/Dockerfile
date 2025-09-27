@@ -3,7 +3,7 @@ RUN apk add --no-cache libc6-compat
 WORKDIR /app
 
 COPY package.json yarn.lock ./
-RUN yarn --frozen-lockfile
+RUN yarn install --frozen-lockfile
 
 
 FROM node:22-alpine AS builder
