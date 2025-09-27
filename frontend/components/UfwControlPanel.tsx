@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Loader2, LogOut, Server, PlusCircle, Trash2 } from "lucide-react";
+import { Loader2, LogOut, Server, PlusCircle, Trash2, Sparkles, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import {
   Select,
@@ -18,7 +18,6 @@ import RulesTableCard, { ParsedRule } from "./RulesTableCard";
 import AddRuleDialog, { AddRuleFormData } from "./AddRuleDialog";
 import DeleteRuleDialog from "./DeleteRuleDialog";
 import AddBackendDialog, { AddBackendFormData } from "./AddBackendDialog";
-import BackendStatus from "./BackendStatus";
 import DeleteBackendDialog from "./DeleteBackendDialog";
 import { BackendConfig } from "@/lib/types";
 import Image from "next/image";
@@ -49,12 +48,81 @@ export default function UfwControlPanel() {
   const [isAppAuthenticated, setIsAppAuthenticated] = useState<boolean>(false);
   const [isAppAuthCheckComplete, setIsAppAuthCheckComplete] = useState<boolean>(false);
 
+  const [onlineNodeCount, setOnlineNodeCount] = useState<number | null>(null);
+  const [lastKnownOnlineNodeCount, setLastKnownOnlineNodeCount] = useState<number>(0);
+  const [isCheckingOnlineNodes, setIsCheckingOnlineNodes] = useState<boolean>(false);
+  const [hasCompletedInitialOnlineCheck, setHasCompletedInitialOnlineCheck] = useState<boolean>(false);
+  const backendsRef = useRef<BackendConfig[]>([]);
+
   const selectedBackend = useMemo(() => {
     return backends.find((b) => b.id === selectedBackendId) || null;
   }, [backends, selectedBackendId]);
 
+  const hasBackends = backends.length > 0;
+
+  const onlineNodesLabel = useMemo(() => {
+    if (!hasCompletedInitialOnlineCheck) return "Checking availability...";
+    const displayCount = onlineNodeCount ?? lastKnownOnlineNodeCount;
+    return `${displayCount} online`;
+  }, [hasCompletedInitialOnlineCheck, lastKnownOnlineNodeCount, onlineNodeCount]);
+
   const fetchSeq = useRef(0);
+  const onlineFetchSeq = useRef(0);
   const activeController = useRef<AbortController | null>(null);
+
+  const refreshOnlineNodes = useCallback(
+    async (listOverride?: BackendConfig[]) => {
+      if (!isAppAuthenticated) {
+        setOnlineNodeCount(null);
+        setLastKnownOnlineNodeCount(0);
+        setIsCheckingOnlineNodes(false);
+        setHasCompletedInitialOnlineCheck(false);
+        return;
+      }
+
+      const list = listOverride ?? backendsRef.current;
+      if (list.length === 0) {
+        setOnlineNodeCount(0);
+        setLastKnownOnlineNodeCount(0);
+        setIsCheckingOnlineNodes(false);
+        setHasCompletedInitialOnlineCheck(true);
+        return;
+      }
+
+      onlineFetchSeq.current += 1;
+      const seq = onlineFetchSeq.current;
+      setIsCheckingOnlineNodes(true);
+
+      try {
+        const results = await Promise.all(
+          list.map(async (backend) => {
+            try {
+              const response = await fetch(`/api/status?backendId=${backend.id}`);
+              return response.ok;
+            } catch {
+              return false;
+            }
+          })
+        );
+
+        if (seq === onlineFetchSeq.current) {
+          const availableCount = results.filter(Boolean).length;
+          setOnlineNodeCount(availableCount);
+          setLastKnownOnlineNodeCount(availableCount);
+        }
+      } catch {
+        if (seq === onlineFetchSeq.current) {
+          setOnlineNodeCount(null);
+        }
+      } finally {
+        if (seq === onlineFetchSeq.current) {
+          setIsCheckingOnlineNodes(false);
+          setHasCompletedInitialOnlineCheck(true);
+        }
+      }
+    },
+    [isAppAuthenticated]
+  );
 
   const fetchBackends = useCallback(async () => {
     if (!isAppAuthenticated) return;
@@ -65,6 +133,8 @@ export default function UfwControlPanel() {
       }
       const fetchedBackends: BackendConfig[] = await response.json();
       setBackends(fetchedBackends);
+      backendsRef.current = fetchedBackends;
+      await refreshOnlineNodes(fetchedBackends);
 
       let idToSelect: string | null = null;
       const storedSelectedId = getInitialBackendId();
@@ -80,9 +150,14 @@ export default function UfwControlPanel() {
       console.error("Error fetching backends:", err);
       toast.error(`Failed to load backend list: ${err.message}`);
       setBackends([]);
+      backendsRef.current = [];
       setSelectedBackendId(null);
+      setOnlineNodeCount(null);
+      setLastKnownOnlineNodeCount(0);
+      setIsCheckingOnlineNodes(false);
+      setHasCompletedInitialOnlineCheck(true);
     }
-  }, [isAppAuthenticated]);
+  }, [isAppAuthenticated, refreshOnlineNodes]);
 
   useEffect(() => {
     if (isAppAuthCheckComplete) {
@@ -90,10 +165,30 @@ export default function UfwControlPanel() {
         fetchBackends();
       } else {
         setBackends([]);
+        backendsRef.current = [];
         setSelectedBackendId(null);
+        setOnlineNodeCount(null);
+        setLastKnownOnlineNodeCount(0);
+        setIsCheckingOnlineNodes(false);
+        setHasCompletedInitialOnlineCheck(false);
       }
     }
   }, [isAppAuthenticated, isAppAuthCheckComplete, fetchBackends]);
+
+  useEffect(() => {
+    backendsRef.current = backends;
+  }, [backends]);
+
+  useEffect(() => {
+    if (!isAppAuthenticated) return;
+
+    refreshOnlineNodes();
+    const interval = setInterval(() => {
+      refreshOnlineNodes();
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [isAppAuthenticated, refreshOnlineNodes]);
 
   useEffect(() => {
     if (selectedBackendId) {
@@ -135,7 +230,9 @@ export default function UfwControlPanel() {
       const addedBackend: BackendConfig = await response.json();
       const updatedBackends = [...backends, addedBackend];
       setBackends(updatedBackends);
+      backendsRef.current = updatedBackends;
       setSelectedBackendId(addedBackend.id);
+      await refreshOnlineNodes(updatedBackends);
       toast.success(`Backend "${addedBackend.name}" added successfully.`);
       setIsAddBackendDialogOpen(false);
     } catch (err: any) {
@@ -159,8 +256,10 @@ export default function UfwControlPanel() {
       }
       const updatedBackends = backends.filter((b) => b.id !== selectedBackend.id);
       setBackends(updatedBackends);
+      backendsRef.current = updatedBackends;
       const nextSelectedId = updatedBackends.length > 0 ? updatedBackends[0].id : null;
       setSelectedBackendId(nextSelectedId);
+      await refreshOnlineNodes(updatedBackends);
       toast.success(`Backend "${selectedBackend.name}" removed successfully.`);
       setBackendToDelete(null);
     } catch (err: any) {
@@ -230,6 +329,10 @@ export default function UfwControlPanel() {
       setRules([]);
       setError(null);
       setSelectedBackendId(null);
+      setOnlineNodeCount(null);
+      setLastKnownOnlineNodeCount(0);
+      setIsCheckingOnlineNodes(false);
+      setHasCompletedInitialOnlineCheck(false);
       localStorage.removeItem("selectedUfwBackendId");
       toast.success("Logged out successfully.");
     } catch (err: any) {
@@ -237,6 +340,10 @@ export default function UfwControlPanel() {
       toast.error(`Logout failed: ${err.message || "Unknown error"}`);
       setIsAppAuthenticated(false);
       setIsAppAuthCheckComplete(true);
+      setOnlineNodeCount(null);
+      setLastKnownOnlineNodeCount(0);
+      setIsCheckingOnlineNodes(false);
+      setHasCompletedInitialOnlineCheck(false);
     } finally {
       setIsSubmitting(false);
     }
@@ -574,38 +681,71 @@ export default function UfwControlPanel() {
   const renderBackendContent = () => {
     if (!selectedBackendId) {
       return (
-        <Alert variant="default">
-          <Server className="h-4 w-4" />
-          <AlertTitle>No Backend Selected</AlertTitle>
-          <AlertDescription>Please select a backend server from the dropdown above, or add one if the list is empty.</AlertDescription>
-        </Alert>
+        <section className="rounded-3xl border border-white/10 bg-slate-900/60 p-10 text-center shadow-[0_30px_90px_rgba(8,15,40,0.55)] backdrop-blur">
+          <div className="mx-auto flex max-w-xl flex-col items-center gap-6">
+            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-white/10 text-cyan-200">
+              <Server className="h-7 w-7" />
+            </div>
+            <div className="space-y-2">
+              <h2 className="text-2xl font-semibold tracking-tight text-white">No backend selected</h2>
+              <p className="text-sm leading-relaxed text-slate-300/85">
+                {hasBackends
+                  ? "Choose an available backend from the panel above to view live telemetry."
+                  : "Add a backend first to orchestrate firewall rules across your infrastructure."}
+              </p>
+            </div>
+            <div className="flex flex-wrap justify-center gap-3">
+              <Button
+                variant="secondary"
+                onClick={() => setIsAddBackendDialogOpen(true)}
+                className="h-10 rounded-xl border border-white/20 bg-white/10 px-6 text-slate-100 shadow-[0_20px_40px_rgba(14,23,42,0.45)] backdrop-blur transition hover:bg-white/15"
+              >
+                <PlusCircle className="h-4 w-4" />
+                Add backend
+              </Button>
+              {hasBackends && (
+                <Button
+                  variant="outline"
+                  onClick={fetchBackends}
+                  className="h-10 rounded-xl border-white/30 bg-slate-950/40 px-6 text-slate-200 transition hover:bg-slate-900/60"
+                >
+                  Refresh list
+                </Button>
+              )}
+            </div>
+          </div>
+        </section>
       );
     }
 
     return (
-      <>
+      <section className="space-y-6">
         {error && (
-          <Alert variant="destructive">
-            <AlertTitle>Error Fetching Status</AlertTitle>
-            <AlertDescription>{error}</AlertDescription>
+          <Alert
+            variant="destructive"
+            className="border-destructive/50 bg-destructive/15 text-destructive-foreground/90"
+          >
+            <AlertTitle>Status sync failed</AlertTitle>
+            <AlertDescription className="text-destructive-foreground/80">
+              {error}
+            </AlertDescription>
           </Alert>
         )}
 
-        <div className="flex justify-between gap-4 items-start">
-          <BackendStatus />
-          <div className="relative w-full max-w-md">
-            <StatusControlCard
-              ufwStatus={ufwStatus ?? "—"}
-              isSubmitting={isSubmitting || isLoadingStatus}
-              onEnable={handleEnable}
-              onDisable={handleDisable}
-            />
-            {isLoadingStatus && (
-              <div className="absolute inset-0 bg-background/60 backdrop-blur-[1px] flex items-center justify-center rounded-xl">
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        <div className="relative">
+          <StatusControlCard
+            ufwStatus={ufwStatus ?? "—"}
+            isSubmitting={isSubmitting || isLoadingStatus}
+            onEnable={handleEnable}
+            onDisable={handleDisable}
+          />
+          {isLoadingStatus && (
+            <div className="absolute inset-0 rounded-3xl border border-white/10 bg-slate-950/40 backdrop-blur">
+              <div className="flex h-full w-full items-center justify-center">
+                <Loader2 className="h-5 w-5 animate-spin text-slate-300/70" />
               </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
 
         <div className="relative">
@@ -619,12 +759,14 @@ export default function UfwControlPanel() {
             onDeleteRuleClick={(rule) => setRuleToDelete(rule)}
           />
           {isLoadingStatus && (
-            <div className="absolute inset-0 bg-background/50 flex items-center justify-center rounded-xl">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            <div className="absolute inset-0 rounded-3xl border border-white/10 bg-slate-950/40 backdrop-blur">
+              <div className="flex h-full w-full items-center justify-center">
+                <Loader2 className="h-6 w-6 animate-spin text-slate-300/70" />
+              </div>
             </div>
           )}
         </div>
-      </>
+      </section>
     );
   };
 
@@ -642,38 +784,112 @@ export default function UfwControlPanel() {
   }
 
   return (
-    <main className="container mx-auto p-4 space-y-6">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
-        <div className="flex items-center gap-2">
-          <Image src="/logo-width.png" alt="Logo" width={200} height={100} />
+    <main className="container relative mx-auto flex w-full max-w-6xl flex-1 flex-col gap-8 px-4 py-10">
+      <div className="flex w-full justify-end">
+        <Button
+          variant="outline"
+          onClick={handleLogout}
+          disabled={isSubmitting}
+          className="h-10 rounded-2xl border-white/20 bg-white/5 px-4 text-sm font-semibold text-slate-100 transition hover:bg-white/10 disabled:opacity-40"
+        >
+          <LogOut className="h-4 w-4" />
+          Logout
+        </Button>
+      </div>
+      <section className="relative overflow-hidden rounded-3xl border border-white/10 bg-white/5 px-6 py-8 shadow-[0_40px_120px_rgba(8,15,40,0.45)] backdrop-blur">
+        <div className="pointer-events-none absolute inset-0 -z-10">
+          <div className="absolute -top-28 right-10 h-80 w-80 rounded-full bg-sky-400/25 blur-[140px]" />
+          <div className="absolute bottom-[-9rem] left-0 h-96 w-96 rounded-full bg-indigo-500/25 blur-[160px]" />
         </div>
-        <div className="flex items-center gap-2 w-full sm:w-auto justify-between">
-          <Select onValueChange={handleBackendChange} value={selectedBackendId || ""}>
-            <SelectTrigger className="w-full w-55 sm:w-80">
-              <SelectValue placeholder="Select Backend..." />
-            </SelectTrigger>
-            <SelectContent>
-              {backends.length === 0 && <SelectItem value="nobackends" disabled>No backends configured</SelectItem>}
-              {backends.map((backend) => (
-                <SelectItem key={backend.id} value={backend.id}>
-                  {backend.name} ({backend.url})
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="icon" onClick={() => setIsAddBackendDialogOpen(true)} title="Add New Backend">
-              <PlusCircle className="h-4 w-4" />
-            </Button>
-            <Button variant="outline" size="icon" onClick={triggerRemoveBackend} disabled={!selectedBackendId} title="Remove Selected Backend">
-              <Trash2 className="h-4 w-4" />
-            </Button>
-            <Button variant="outline" size="icon" onClick={handleLogout} disabled={isSubmitting} title="Logout">
-              <LogOut className="h-4 w-4" />
-            </Button>
+        <div className="relative grid gap-8 lg:grid-cols-[minmax(0,1.1fr),minmax(0,0.9fr)]">
+          <div className="space-y-6">
+            <div className="space-y-4">
+              <div className="flex flex-col gap-3">
+                <div className="w-fit rounded-2xl border border-white/20 bg-white/10 px-4 py-2 shadow-inner">
+                  <Image src="/logo-width.png" alt="UFW Panel" width={210} height={80} className="mx-auto" />
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-3 text-sm text-slate-200/80">
+                <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1">
+                  <ShieldCheck className="h-4 w-4 text-emerald-300" />
+                  {selectedBackend ? `Active backend: ${selectedBackend.name}` : "Awaiting backend selection"}
+                </span>
+                <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1">
+                  <Server className="h-4 w-4 text-cyan-200" />
+                  {hasBackends ? `${backends.length} registered node${backends.length > 1 ? "s" : ""}` : "No nodes yet"}
+                </span>
+                <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-sm">
+                  <Sparkles className="h-4 w-4 text-sky-200" />
+                  {onlineNodesLabel}
+                </span>
+                {selectedBackend?.url && (
+                  <span className="inline-flex items-center gap-2 overflow-hidden text-ellipsis whitespace-nowrap rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-slate-200/70">
+                    {selectedBackend.url}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex w-full flex-col gap-5 rounded-3xl border border-white/15 bg-slate-950/55 p-6 shadow-[0_25px_70px_rgba(8,15,40,0.55)] backdrop-blur">
+            <div className="space-y-3">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.38em] text-slate-300/70">
+                Backend target
+              </span>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="w-full sm:w-auto sm:flex-1">
+                  <Select onValueChange={handleBackendChange} value={selectedBackendId ?? undefined}>
+                    <SelectTrigger className="group h-12 w-full min-w-[220px] md:w-[280px] rounded-2xl border border-white/20 bg-slate-950/70 px-4 text-left text-sm font-medium text-slate-100 shadow-[0_18px_35px_rgba(13,25,58,0.55)] backdrop-blur transition-all hover:border-sky-300/40 hover:bg-slate-900/80 focus-visible:border-sky-300/60 focus-visible:bg-slate-900/85">
+                      <SelectValue placeholder={hasBackends ? "Select backend" : "No backend available"} />
+                    </SelectTrigger>
+                    <SelectContent className="rounded-2xl border border-white/20 bg-slate-950/90 text-slate-100 shadow-[0_32px_90px_rgba(8,20,46,0.65)] backdrop-blur-xl">
+                      {backends.length === 0 && (
+                        <SelectItem
+                          value="nobackends"
+                          disabled
+                          className="rounded-xl px-3 py-2 text-slate-500/80"
+                        >
+                          No backends configured
+                        </SelectItem>
+                      )}
+                      {backends.map((backend) => (
+                        <SelectItem
+                          key={backend.id}
+                          value={backend.id}
+                          className="rounded-xl px-3 py-2 text-slate-200 transition hover:bg-slate-800/70 hover:text-white focus:bg-sky-500/15 focus:text-sky-100 data-[state=checked]:bg-sky-500/20 data-[state=checked]:text-sky-100"
+                        >
+                          <div className="flex flex-col text-left">
+                            <span className="text-sm font-semibold tracking-wide">{backend.name}</span>
+                            <span className="text-xs text-slate-400/90">{backend.url}</span>
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 sm:flex-nowrap sm:gap-3">
+                  <Button
+                    onClick={() => setIsAddBackendDialogOpen(true)}
+                    className="h-11 rounded-2xl bg-gradient-to-r from-indigo-500/85 via-sky-500/80 to-cyan-400/80 px-4 text-sm font-semibold text-slate-50 shadow-[0_18px_45px_rgba(56,123,255,0.45)] transition hover:scale-[1.01]"
+                  >
+                    <PlusCircle className="h-4 w-4" />
+                    Add backend
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={triggerRemoveBackend}
+                    disabled={!selectedBackendId}
+                    className="h-11 rounded-2xl border-white/20 bg-white/10 px-4 text-sm font-semibold text-slate-100 transition hover:bg-white/15 disabled:opacity-40"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Remove
+                  </Button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
+      </section>
 
       {renderBackendContent()}
 
@@ -703,7 +919,10 @@ export default function UfwControlPanel() {
       <DeleteBackendDialog
         backendToDelete={backendToDelete}
         onOpenChange={(open) => !open && setBackendToDelete(null)}
-        onConfirmDelete={handleRemoveBackend}
+        onConfirmDelete={async () => {
+          await handleRemoveBackend();
+        }}
+        isSubmitting={isSubmitting}
       />
     </main>
   );
