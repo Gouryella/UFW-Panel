@@ -20,7 +20,26 @@ import DeleteRuleDialog from "./DeleteRuleDialog";
 import AddBackendDialog, { AddBackendFormData } from "./AddBackendDialog";
 import DeleteBackendDialog from "./DeleteBackendDialog";
 import { BackendConfig } from "@/lib/types";
+import { resolveApiUrl } from "@/lib/api";
 import Image from "next/image";
+
+const getErrorMessage = (error: unknown): string => {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return "Unknown error";
+  }
+};
+
+const isAbortError = (error: unknown): boolean => {
+  return typeof error === "object" && error !== null && (error as { name?: string }).name === "AbortError";
+};
 
 const getInitialBackendId = (): string | null => {
   if (typeof window !== "undefined" && window.localStorage) {
@@ -50,7 +69,6 @@ export default function UfwControlPanel() {
 
   const [onlineNodeCount, setOnlineNodeCount] = useState<number | null>(null);
   const [lastKnownOnlineNodeCount, setLastKnownOnlineNodeCount] = useState<number>(0);
-  const [isCheckingOnlineNodes, setIsCheckingOnlineNodes] = useState<boolean>(false);
   const [hasCompletedInitialOnlineCheck, setHasCompletedInitialOnlineCheck] = useState<boolean>(false);
   const backendsRef = useRef<BackendConfig[]>([]);
 
@@ -75,7 +93,6 @@ export default function UfwControlPanel() {
       if (!isAppAuthenticated) {
         setOnlineNodeCount(null);
         setLastKnownOnlineNodeCount(0);
-        setIsCheckingOnlineNodes(false);
         setHasCompletedInitialOnlineCheck(false);
         return;
       }
@@ -84,20 +101,20 @@ export default function UfwControlPanel() {
       if (list.length === 0) {
         setOnlineNodeCount(0);
         setLastKnownOnlineNodeCount(0);
-        setIsCheckingOnlineNodes(false);
         setHasCompletedInitialOnlineCheck(true);
         return;
       }
 
       onlineFetchSeq.current += 1;
       const seq = onlineFetchSeq.current;
-      setIsCheckingOnlineNodes(true);
 
       try {
         const results = await Promise.all(
           list.map(async (backend) => {
             try {
-              const response = await fetch(`/api/status?backendId=${backend.id}`);
+              const response = await fetch(resolveApiUrl(`/api/status?backendId=${backend.id}`), {
+                credentials: "include",
+              });
               return response.ok;
             } catch {
               return false;
@@ -116,7 +133,6 @@ export default function UfwControlPanel() {
         }
       } finally {
         if (seq === onlineFetchSeq.current) {
-          setIsCheckingOnlineNodes(false);
           setHasCompletedInitialOnlineCheck(true);
         }
       }
@@ -127,7 +143,9 @@ export default function UfwControlPanel() {
   const fetchBackends = useCallback(async () => {
     if (!isAppAuthenticated) return;
     try {
-      const response = await fetch("/api/backends");
+      const response = await fetch(resolveApiUrl("/api/backends"), {
+        credentials: "include",
+      });
       if (!response.ok) {
         throw new Error(`Failed to fetch backends: ${response.statusText}`);
       }
@@ -146,15 +164,15 @@ export default function UfwControlPanel() {
         idToSelect = fetchedBackends[0].id;
       }
       setSelectedBackendId(idToSelect);
-    } catch (err: any) {
+    } catch (err) {
+      const message = getErrorMessage(err);
       console.error("Error fetching backends:", err);
-      toast.error(`Failed to load backend list: ${err.message}`);
+      toast.error(`Failed to load backend list: ${message}`);
       setBackends([]);
       backendsRef.current = [];
       setSelectedBackendId(null);
       setOnlineNodeCount(null);
       setLastKnownOnlineNodeCount(0);
-      setIsCheckingOnlineNodes(false);
       setHasCompletedInitialOnlineCheck(true);
     }
   }, [isAppAuthenticated, refreshOnlineNodes]);
@@ -169,7 +187,6 @@ export default function UfwControlPanel() {
         setSelectedBackendId(null);
         setOnlineNodeCount(null);
         setLastKnownOnlineNodeCount(0);
-        setIsCheckingOnlineNodes(false);
         setHasCompletedInitialOnlineCheck(false);
       }
     }
@@ -218,9 +235,10 @@ export default function UfwControlPanel() {
       return;
     }
     try {
-      const response = await fetch("/api/backends", {
+      const response = await fetch(resolveApiUrl("/api/backends"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ name: formData.name, url: formData.url, apiKey: formData.apiKey }),
       });
       if (!response.ok) {
@@ -235,9 +253,10 @@ export default function UfwControlPanel() {
       await refreshOnlineNodes(updatedBackends);
       toast.success(`Backend "${addedBackend.name}" added successfully.`);
       setIsAddBackendDialogOpen(false);
-    } catch (err: any) {
+    } catch (err) {
+      const message = getErrorMessage(err);
       console.error("Error adding backend via API:", err);
-      toast.error(`Failed to add backend: ${err.message}`);
+      toast.error(`Failed to add backend: ${message}`);
     }
   };
 
@@ -247,9 +266,9 @@ export default function UfwControlPanel() {
       return;
     }
     try {
-      const apiUrl = new URL("/api/backends", window.location.origin);
+      const apiUrl = new URL(resolveApiUrl("/api/backends"));
       apiUrl.searchParams.append("id", selectedBackend.id);
-      const response = await fetch(apiUrl.toString(), { method: "DELETE" });
+      const response = await fetch(apiUrl.toString(), { method: "DELETE", credentials: "include" });
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.details || `Failed to remove backend: ${response.statusText}`);
@@ -262,9 +281,10 @@ export default function UfwControlPanel() {
       await refreshOnlineNodes(updatedBackends);
       toast.success(`Backend "${selectedBackend.name}" removed successfully.`);
       setBackendToDelete(null);
-    } catch (err: any) {
+    } catch (err) {
+      const message = getErrorMessage(err);
       console.error("Error removing backend via API:", err);
-      toast.error(`Failed to remove backend: ${err.message}`);
+      toast.error(`Failed to remove backend: ${message}`);
     }
   };
 
@@ -285,7 +305,7 @@ export default function UfwControlPanel() {
     const checkAppAuth = async () => {
       setIsAppAuthCheckComplete(false);
       try {
-        const response = await fetch("/api/auth");
+      const response = await fetch(resolveApiUrl("/api/auth"), { credentials: "include" });
         if (response.ok) {
           const data = await response.json();
           if (data.authenticated) {
@@ -306,19 +326,25 @@ export default function UfwControlPanel() {
     checkAppAuth();
   }, []);
 
-  const getApiUrl = (path: string): string => {
-    if (!selectedBackendId) {
-      throw new Error("No backend selected.");
-    }
-    const url = new URL(path, window.location.origin);
-    url.searchParams.append("backendId", selectedBackendId);
-    return url.toString();
-  };
+  const getApiUrl = useCallback(
+    (path: string): string => {
+      if (!selectedBackendId) {
+        throw new Error("No backend selected.");
+      }
+      const url = new URL(resolveApiUrl(path));
+      url.searchParams.set("backendId", selectedBackendId);
+      return url.toString();
+    },
+    [selectedBackendId]
+  );
 
   const handleLogout = async () => {
     setIsSubmitting(true);
     try {
-      const response = await fetch("/api/auth/logout", { method: "POST" });
+      const response = await fetch(resolveApiUrl("/api/auth/logout"), {
+        method: "POST",
+        credentials: "include",
+      });
       if (!response.ok) {
         const data = await response.json();
         throw new Error(data.error || "Logout failed");
@@ -331,18 +357,17 @@ export default function UfwControlPanel() {
       setSelectedBackendId(null);
       setOnlineNodeCount(null);
       setLastKnownOnlineNodeCount(0);
-      setIsCheckingOnlineNodes(false);
       setHasCompletedInitialOnlineCheck(false);
       localStorage.removeItem("selectedUfwBackendId");
       toast.success("Logged out successfully.");
-    } catch (err: any) {
+    } catch (err) {
+      const message = getErrorMessage(err);
       console.error("Logout failed:", err);
-      toast.error(`Logout failed: ${err.message || "Unknown error"}`);
+      toast.error(`Logout failed: ${message || "Unknown error"}`);
       setIsAppAuthenticated(false);
       setIsAppAuthCheckComplete(true);
       setOnlineNodeCount(null);
       setLastKnownOnlineNodeCount(0);
-      setIsCheckingOnlineNodes(false);
       setHasCompletedInitialOnlineCheck(false);
     } finally {
       setIsSubmitting(false);
@@ -365,7 +390,10 @@ export default function UfwControlPanel() {
     setIsLoadingStatus(true);
     setError(null);
     try {
-      const response = await fetch(getApiUrl("/api/status"), { signal: controller.signal });
+      const response = await fetch(getApiUrl("/api/status"), {
+        signal: controller.signal,
+        credentials: "include",
+      });
       const data = await response.json();
 
       if (mySeq !== fetchSeq.current || currentId !== selectedBackendId) return;
@@ -377,19 +405,20 @@ export default function UfwControlPanel() {
 
       setUfwStatus(data.status);
       setRules(data.rules);
-    } catch (err: any) {
-      if (err?.name === "AbortError") return;
+    } catch (err) {
+      if (isAbortError(err)) return;
 
       if (mySeq !== fetchSeq.current || currentId !== selectedBackendId) return;
 
+      const message = getErrorMessage(err);
       console.error("Failed to fetch UFW status via API route:", err);
-      setError(err.message || "An unknown error occurred while fetching status.");
+      setError(message || "An unknown error occurred while fetching status.");
       setUfwStatus(null);
       setRules([]);
 
-      if (err.message?.includes("401") || err.message?.includes("Unauthorized")) {
+      if (message.includes("401") || message.includes("Unauthorized")) {
         toast.error("Backend authentication failed. Check API Key or backend status.");
-      } else if (err.message?.includes("Configuration Error")) {
+      } else if (message.includes("Configuration Error")) {
         toast.error("Configuration error. Check if backend exists and has an API key.");
       }
     } finally {
@@ -401,7 +430,7 @@ export default function UfwControlPanel() {
         }
       }
     }
-  }, [selectedBackendId, isAppAuthenticated, selectedBackend]);
+  }, [selectedBackendId, isAppAuthenticated, selectedBackend, getApiUrl]);
 
   useEffect(() => {
     if (isAppAuthenticated && selectedBackendId) {
@@ -423,19 +452,23 @@ export default function UfwControlPanel() {
     if (!selectedBackendId) return;
     setIsSubmitting(true);
     try {
-      const response = await fetch(getApiUrl(relativePath), { method: "POST" });
+      const response = await fetch(getApiUrl(relativePath), {
+        method: "POST",
+        credentials: "include",
+      });
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.details || data.error || `HTTP error! status: ${response.status}`);
       }
       toast.success(successMessage);
       await fetchStatus();
-    } catch (err: any) {
+    } catch (err) {
+      const message = getErrorMessage(err);
       console.error(`Failed to ${errorMessagePrefix} via API route:`, err);
-      toast.error(`${errorMessagePrefix}: ${err.message || "Unknown error"}`);
-      if (err.message?.includes("401") || err.message?.includes("Unauthorized")) {
+      toast.error(`${errorMessagePrefix}: ${message || "Unknown error"}`);
+      if (message.includes("401") || message.includes("Unauthorized")) {
         toast.error("Backend authentication failed. Check API Key or backend status.");
-      } else if (err.message?.includes("Configuration Error")) {
+      } else if (message.includes("Configuration Error")) {
         toast.error("Configuration error. Check if backend exists and has an API key.");
       }
     } finally {
@@ -457,19 +490,20 @@ export default function UfwControlPanel() {
     setRuleToDelete(null);
     try {
       const apiUrl = getApiUrl(`/api/rules/delete/${ruleNumber}`);
-      const response = await fetch(apiUrl, { method: "DELETE" });
+      const response = await fetch(apiUrl, { method: "DELETE", credentials: "include" });
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.details || data.error || `HTTP error! status: ${response.status}`);
       }
       toast.success(`Rule [${ruleNumber}] deleted successfully!`);
       await fetchStatus();
-    } catch (err: any) {
+    } catch (err) {
+      const message = getErrorMessage(err);
       console.error(`Failed to delete rule ${ruleNumber} via API route:`, err);
-      toast.error(`Delete Rule ${ruleNumber}: ${err.message || "Unknown error"}`);
-      if (err.message?.includes("401") || err.message?.includes("Unauthorized")) {
+      toast.error(`Delete Rule ${ruleNumber}: ${message || "Unknown error"}`);
+      if (message.includes("401") || message.includes("Unauthorized")) {
         toast.error("Backend authentication failed. Check API Key or backend status.");
-      } else if (err.message?.includes("Configuration Error")) {
+      } else if (message.includes("Configuration Error")) {
         toast.error("Configuration error. Check if backend exists and has an API key.");
       }
     } finally {
@@ -481,7 +515,7 @@ export default function UfwControlPanel() {
     if (!selectedBackendId) return;
     setAddRuleError(null);
     let relativeApiPath = "";
-    let payload: any = {};
+    let payload: Record<string, unknown> = {};
     let ruleDescription = "";
 
     if (formData.type === "port") {
@@ -517,6 +551,7 @@ export default function UfwControlPanel() {
             const response = await fetch(getApiUrl(apiPath), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
+              credentials: "include",
               body: JSON.stringify(singlePayload),
             });
             const data = await response.json();
@@ -528,11 +563,11 @@ export default function UfwControlPanel() {
           await fetchStatus();
           setIsAddRuleDialogOpen(false);
           setAddRuleError(null);
-        } catch (err: any) {
+        } catch (err) {
+          const message = getErrorMessage(err) || "Unknown error while adding port rules.";
           console.error(`Failed to add one or more port rules via API route:`, err);
-          const errorMessage = err.message || "Unknown error while adding port rules.";
-          toast.error(`Add Port Rules: ${errorMessage}`);
-          setAddRuleError(errorMessage);
+          toast.error(`Add Port Rules: ${message}`);
+          setAddRuleError(message);
         } finally {
           setIsSubmitting(false);
         }
@@ -591,6 +626,7 @@ export default function UfwControlPanel() {
       const response = await fetch(getApiUrl(relativeApiPath), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify(payload),
       });
       const data = await response.json();
@@ -601,14 +637,14 @@ export default function UfwControlPanel() {
       await fetchStatus();
       setIsAddRuleDialogOpen(false);
       setAddRuleError(null);
-    } catch (err: any) {
+    } catch (err) {
+      const message = getErrorMessage(err) || "Unknown error while adding rule.";
       console.error(`Failed to add rule via API route:`, err);
-      const errorMessage = err.message || "Unknown error while adding rule.";
-      toast.error(`Add Rule: ${errorMessage}`);
-      setAddRuleError(errorMessage);
-      if (err.message?.includes("401") || err.message?.includes("Unauthorized")) {
+      toast.error(`Add Rule: ${message}`);
+      setAddRuleError(message);
+      if (message.includes("401") || message.includes("Unauthorized")) {
         toast.error("Backend authentication failed. Check API Key or backend status.");
-      } else if (err.message?.includes("Configuration Error")) {
+      } else if (message.includes("Configuration Error")) {
         toast.error("Configuration error. Check if backend exists and has an API key.");
       }
     } finally {

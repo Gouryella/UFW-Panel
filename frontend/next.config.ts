@@ -4,7 +4,11 @@ const nextConfig: NextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
-  output: 'standalone',
+  output: "export",
+  trailingSlash: true,
+  images: {
+    unoptimized: true,
+  },
   productionBrowserSourceMaps: false,
 };
 

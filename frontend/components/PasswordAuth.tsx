@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { resolveApiUrl } from "@/lib/api";
 
 interface PasswordAuthProps {
   backendUrl: string;
@@ -38,13 +39,14 @@ export default function PasswordAuth({ backendUrl, onSuccess, onError, clearErro
     setLocalError(null);
     clearError();
 
-    const apiUrl = new URL("/api/auth", window.location.origin);
+    const apiUrl = new URL(resolveApiUrl("/api/auth"));
     apiUrl.searchParams.append("backendUrl", backendUrl);
 
     try {
       const response = await fetch(apiUrl.toString(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ password }),
       });
 

@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { RefreshCcw } from "lucide-react";
+import { resolveApiUrl } from "@/lib/api";
 
 interface Backend {
   id: string;
@@ -21,7 +22,9 @@ export default function BackendStatusCards() {
   const fetchOnce = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/backends");
+      const res = await fetch(resolveApiUrl("/api/backends"), {
+        credentials: "include",
+      });
       if (!res.ok) throw new Error("failed");
       const backends: Backend[] = await res.json();
       setTotalCount(backends.length || 0);
@@ -29,7 +32,9 @@ export default function BackendStatusCards() {
       const results = await Promise.all(
         backends.map(async (b) => {
           try {
-            const r = await fetch(`/api/status?backendId=${b.id}`);
+            const r = await fetch(resolveApiUrl(`/api/status?backendId=${b.id}`), {
+              credentials: "include",
+            });
             return r.ok;
           } catch {
             return false;

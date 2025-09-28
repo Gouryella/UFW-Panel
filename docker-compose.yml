@@ -3,12 +3,9 @@ services:
     image: gouryella/ufw-panel:latest
     container_name: ufw-panel-frontend
     ports:
-      - "30737:3000"
+      - "30737:8080"
     volumes:
-      - ufw_db_data:/app/database
+      - ./data/database:/app/database
     env_file:
       - .env
     restart: unless-stopped
-
-volumes:
-  ufw_db_data:

@@ -1,36 +1,72 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# UFW Panel Frontend
 
-## Getting Started
+This package now consists of two pieces that ship together:
 
-First, run the development server:
+- A static Next.js interface exported into the `out/` directory.
+- A Go gateway (`cmd/frontend-server`) that replaces the former Next.js API routes and serves both the static assets and the proxy endpoints consumed by the UI.
+
+## Prerequisites
+
+- Node.js 22+ (with Corepack/Yarn enabled)
+- Go 1.23+
+
+## Development workflow
+
+1. Install dependencies once:
+   ```bash
+   yarn install
+   ```
+2. Export the UI whenever you need fresh static assets:
+   ```bash
+   yarn build
+   ```
+   The build writes to `out/` and can be watched/served by the Go server immediately.
+3. Start the Go server (it will serve `/api/*` and the static front-end). The process automatically loads variables from a local `.env` file if present:
+   ```bash
+   AUTH_PASSWORD=changeme \
+   JWT_SECRET=some-long-secret \
+   go run ./cmd/frontend-server
+   ```
+4. Optional: when running `yarn dev` for rapid UI iteration, point the browser calls to the Go server by exporting `NEXT_PUBLIC_API_BASE=http://localhost:8080` before starting the dev server.
+
+Environment variables recognised by the server:
+
+- `AUTH_PASSWORD` – password expected by the `/api/auth` endpoint (required for login).
+- `JWT_SECRET` – HMAC secret used to sign the session cookie (required).
+- `JWT_EXPIRATION` – optional TTL expression (`1d`, `12h`, etc.), default `1d`.
+- `PORT` – listening port for the Go server, default `8080`.
+- `FRONTEND_DIST_DIR` – override location of the exported Next.js assets if you are not using the default `./out`.
+- `FRONTEND_DB_PATH` – optional path to the SQLite file (`./database/ufw-webui.db` by default).
+- `FRONTEND_ALLOWED_ORIGINS` – optional comma-separated list of origins permitted for cross-site requests with cookies; leave unset to allow requests from any origin.
+
+## Production build
+
+The provided Dockerfile compiles the Go gateway and exports the UI in a multi-stage build:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+docker build -t ufw-panel-frontend ./frontend
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The resulting image exposes port `8080` and expects the same environment variables listed above at runtime.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Testing
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Run the following commands from the `frontend/` directory to make sure the project still builds cleanly:
 
-## Learn More
+```bash
+# Compile the Go gateway
+go build ./...
 
-To learn more about Next.js, take a look at the following resources:
+# Lint the React client
+yarn lint
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+# Regenerate the static export used by the Go server
+yarn build
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+# (Optional) Smoke-test the full stack locally
+AUTH_PASSWORD=changeme \
+JWT_SECRET=some-long-secret \
+go run ./cmd/frontend-server
+```
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+If you have additional Go or React tests in the future, add them alongside these commands so they remain easy to discover.

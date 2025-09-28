@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build",
-    "start": "next start",
+    "start": "next dev --turbopack",
     "lint": "next lint"
   },
   "dependencies": {
@@ -17,11 +17,8 @@
     "@radix-ui/react-select": "^2.2.4",
     "@radix-ui/react-slot": "^1.2.2",
     "@types/uuid": "^10.0.0",
-    "better-sqlite3": "^11.9.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "jose": "^6.0.13",
-    "jsonwebtoken": "^9.0.2",
     "lucide-react": "^0.507.0",
     "motion": "^12.23.12",
     "next": "15.3.1",
@@ -35,8 +32,6 @@
   "devDependencies": {
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
-    "@types/better-sqlite3": "^7.6.13",
-    "@types/jsonwebtoken": "^9.0.9",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
