@@ -71,6 +71,7 @@ export default function UfwControlPanel() {
   const [lastKnownOnlineNodeCount, setLastKnownOnlineNodeCount] = useState<number>(0);
   const [hasCompletedInitialOnlineCheck, setHasCompletedInitialOnlineCheck] = useState<boolean>(false);
   const backendsRef = useRef<BackendConfig[]>([]);
+  const hasShownEmptyBackendsToast = useRef<boolean>(false);
 
   const selectedBackend = useMemo(() => {
     return backends.find((b) => b.id === selectedBackendId) || null;
@@ -149,7 +150,24 @@ export default function UfwControlPanel() {
       if (!response.ok) {
         throw new Error(`Failed to fetch backends: ${response.statusText}`);
       }
-      const fetchedBackends: BackendConfig[] = await response.json();
+
+      const data = (await response.json()) as unknown;
+      const fetchedBackends = Array.isArray(data) ? (data as BackendConfig[]) : [];
+      const shouldShowEmptyNotice = !Array.isArray(data) || fetchedBackends.length === 0;
+
+      if (!Array.isArray(data)) {
+        console.warn("Received non-array payload for backend list, treating as empty.", data);
+      }
+
+      if (shouldShowEmptyNotice) {
+        if (!hasShownEmptyBackendsToast.current) {
+          toast.info("No backend available yet. Add one to get started.");
+          hasShownEmptyBackendsToast.current = true;
+        }
+      } else {
+        hasShownEmptyBackendsToast.current = false;
+      }
+
       setBackends(fetchedBackends);
       backendsRef.current = fetchedBackends;
       await refreshOnlineNodes(fetchedBackends);
