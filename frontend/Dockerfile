@@ -4,7 +4,6 @@ RUN apk add --no-cache libc6-compat python3 build-base
 WORKDIR /app
 RUN corepack enable
 COPY package.json yarn.lock .yarnrc.yml ./
-COPY .yarn ./.yarn
 RUN yarn install --immutable
 
 # Stage 2: build static frontend
