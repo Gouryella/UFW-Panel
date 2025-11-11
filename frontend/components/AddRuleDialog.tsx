@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, FormEvent, useMemo } from "react";
+import { useState, FormEvent, useMemo, useEffect, useCallback } from "react";
 import {
   Dialog,
   DialogContent,
@@ -76,6 +76,28 @@ export default function AddRuleDialog({
     return 'Forward traffic between nodes while keeping audit trails.';
   }, [type]);
 
+
+  const resetForm = useCallback(() => {
+    setType('port');
+    setAction('allow');
+    setPortProto('');
+    setIpAddress('');
+    setIpPortProto('');
+    setPortIpv4(true);
+    setPortIpv6(true);
+    setComment('');
+    setFromIpForward('');
+    setToIpForward('');
+    setProtocolForward('');
+    setPortForward('');
+  }, []);
+
+  useEffect(() => {
+    if (isOpen) {
+      resetForm();
+      clearError();
+    }
+  }, [isOpen, resetForm, clearError]);
 
   const handleTypeChange = (value: string) => {
     setType(value as 'port' | 'ip' | 'forward');

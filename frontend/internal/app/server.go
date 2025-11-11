@@ -36,7 +36,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	router.Use(gin.Recovery(), gin.Logger())
 
 	corsCfg := cors.Config{
-		AllowMethods:     []string{http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodOptions},
+		AllowMethods:     []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
 		AllowHeaders:     []string{"Content-Type", "X-API-KEY", "Authorization"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,

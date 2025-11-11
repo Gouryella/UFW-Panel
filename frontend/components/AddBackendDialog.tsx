@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -23,6 +23,7 @@ import {
 import { AlertCircle } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { cn } from "@/lib/utils";
+import { BackendConfig } from "@/lib/types";
 
 export interface AddBackendFormData {
   name: string;
@@ -30,16 +31,24 @@ export interface AddBackendFormData {
   apiKey: string;
 }
 
+type BackendDialogMode = "create" | "edit";
+
 interface AddBackendDialogProps {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
-  onSave: (formData: AddBackendFormData) => void;
+  mode: BackendDialogMode;
+  backend?: BackendConfig | null;
+  onCreate: (formData: AddBackendFormData) => void;
+  onUpdate: (backendId: string, formData: AddBackendFormData) => void;
 }
 
 export default function AddBackendDialog({
   isOpen,
   onOpenChange,
-  onSave,
+  mode,
+  backend,
+  onCreate,
+  onUpdate,
 }: AddBackendDialogProps) {
   const [name, setName] = useState("");
   const [scheme, setScheme] = useState<"http" | "https">("https");
@@ -48,16 +57,54 @@ export default function AddBackendDialog({
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!isOpen) {
-      setName("");
-      setScheme("https");
-      setHost("");
-      setPort("");
+  const resetForm = useCallback(() => {
+    setName("");
+    setScheme("https");
+    setHost("");
+    setPort("");
+    setApiKey("");
+    setError(null);
+  }, []);
+
+  const prefillFromBackend = useCallback(
+    (backendConfig: BackendConfig) => {
+      setName(backendConfig.name ?? "");
+      let detectedScheme: "http" | "https" = "https";
+      let detectedHost = "";
+      let detectedPort = "";
+
+      try {
+        const parsed = new URL(backendConfig.url);
+        const protocol = parsed.protocol.replace(":", "");
+        if (protocol === "http" || protocol === "https") {
+          detectedScheme = protocol;
+        }
+        detectedHost = parsed.hostname || backendConfig.url;
+        detectedPort = parsed.port || "";
+      } catch {
+        detectedHost = backendConfig.url;
+      }
+
+      setScheme(detectedScheme);
+      setHost(detectedHost);
+      setPort(detectedPort);
       setApiKey("");
       setError(null);
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
     }
-  }, [isOpen]);
+
+    if (mode === "edit" && backend) {
+      prefillFromBackend(backend);
+    } else {
+      resetForm();
+    }
+  }, [isOpen, mode, backend, prefillFromBackend, resetForm]);
 
   const validateHost = (value: string) => {
     const hostRegex = /^(localhost|\d{1,3}(?:\.\d{1,3}){3}|[a-zA-Z0-9.-]+)$/;
@@ -93,15 +140,28 @@ export default function AddBackendDialog({
       return;
     }
 
-    if (!apiKey.trim()) {
+    if (mode === "create" && !apiKey.trim()) {
       setError("API Key cannot be empty.");
       return;
     }
 
     const url = `${scheme}://${host.trim()}:${portNum}`;
+    const trimmedApiKey = apiKey.trim();
 
-    onSave({ name: name.trim(), url, apiKey: apiKey.trim() });
+    const payload: AddBackendFormData = {
+      name: name.trim(),
+      url,
+      apiKey: trimmedApiKey,
+    };
+
+    if (mode === "edit" && backend) {
+      onUpdate(backend.id, payload);
+    } else {
+      onCreate(payload);
+    }
   };
+
+  const isEditMode = mode === "edit";
 
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
@@ -111,12 +171,14 @@ export default function AddBackendDialog({
           <div className="pointer-events-none absolute bottom-[-18rem] right-[-4rem] h-[26rem] w-[26rem] rounded-full bg-indigo-500/20 blur-[180px]" />
 
           <DialogHeader className="relative space-y-3 text-left">
-            <DialogTitle className="text-2xl font-semibold tracking-tight text-white">
-              Add New Backend
-            </DialogTitle>
-            <DialogDescription className="max-w-lg text-sm leading-relaxed text-slate-300/80">
-              Select protocol, enter host and port, and provide the API Key for the backend server.
-            </DialogDescription>
+              <DialogTitle className="text-2xl font-semibold tracking-tight text-white">
+                {isEditMode ? "Edit Backend" : "Add New Backend"}
+              </DialogTitle>
+              <DialogDescription className="max-w-lg text-sm leading-relaxed text-slate-300/80">
+                {isEditMode
+                  ? "Update the target endpoint details for this backend. Leave API Key blank to keep the existing value."
+                  : "Select protocol, enter host and port, and provide the API Key for the backend server."}
+              </DialogDescription>
           </DialogHeader>
 
           <div className="relative mt-6 grid gap-5">
@@ -202,9 +264,9 @@ export default function AddBackendDialog({
             </div>
           </div>
 
-          <div className="grid gap-2">
+          <div className="grid gap-2 mt-4">
             <Label htmlFor="backend-apikey" className="text-xs font-semibold uppercase tracking-[0.32em] text-slate-300/80">
-              API Key
+              API Key {isEditMode && <span className="text-[10px] font-normal text-slate-400">(leave blank to keep)</span>}
             </Label>
             <Input
               id="backend-apikey"
@@ -214,9 +276,9 @@ export default function AddBackendDialog({
                 "h-11 rounded-2xl border-white/15 bg-white/10 text-sm font-medium text-slate-100 placeholder:text-slate-400/80 shadow-inner",
                 "focus-visible:border-indigo-400/70 focus-visible:ring-indigo-400/30"
               )}
-              placeholder="Enter backend specific API Key"
+              placeholder={isEditMode ? "Leave blank to reuse existing key" : "Enter backend specific API Key"}
               type="password"
-              required
+              required={mode === "create"}
             />
           </div>
 
@@ -235,7 +297,7 @@ export default function AddBackendDialog({
               onClick={handleSave}
               className="h-11 w-full rounded-2xl bg-gradient-to-r from-indigo-500/85 via-sky-500/80 to-cyan-400/80 px-6 text-sm font-semibold text-slate-50 shadow-[0_18px_45px_rgba(56,123,255,0.45)] transition hover:scale-[1.01] sm:w-auto"
             >
-              Save Backend
+              {isEditMode ? "Save changes" : "Save Backend"}
             </Button>
           </DialogFooter>
         </div>

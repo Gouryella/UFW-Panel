@@ -23,6 +23,7 @@ func NewBackendHandler(repo *storage.BackendRepository) *BackendHandler {
 func (h *BackendHandler) Register(rg *gin.RouterGroup) {
 	rg.GET("/backends", h.list)
 	rg.POST("/backends", h.create)
+	rg.PUT("/backends/:id", h.update)
 	rg.DELETE("/backends", h.remove)
 }
 
@@ -102,6 +103,76 @@ func (h *BackendHandler) remove(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Backend removed successfully"})
+}
+
+func (h *BackendHandler) update(c *gin.Context) {
+	id := strings.TrimSpace(c.Param("id"))
+	if id == "" {
+		writeError(c, http.StatusBadRequest, "Missing backend ID.", nil)
+		return
+	}
+
+	type request struct {
+		Name   string  `json:"name"`
+		URL    string  `json:"url"`
+		APIKey *string `json:"apiKey"`
+	}
+
+	var body request
+	if err := c.ShouldBindJSON(&body); err != nil {
+		writeError(c, http.StatusBadRequest, "Invalid payload.", nil)
+		return
+	}
+
+	body.Name = strings.TrimSpace(body.Name)
+	body.URL = strings.TrimSpace(body.URL)
+
+	if body.Name == "" || body.URL == "" {
+		writeError(c, http.StatusBadRequest, "Missing required fields: name, url.", nil)
+		return
+	}
+	if !isValidURL(body.URL) {
+		writeError(c, http.StatusBadRequest, "Invalid URL format.", nil)
+		return
+	}
+
+	ctx := c.Request.Context()
+	backend, err := h.repo.Get(ctx, id)
+	if err != nil {
+		writeError(c, http.StatusInternalServerError, "Failed to fetch backend.", err.Error())
+		return
+	}
+	if backend == nil {
+		writeError(c, http.StatusNotFound, "Backend configuration not found.", nil)
+		return
+	}
+
+	backend.Name = body.Name
+	backend.URL = body.URL
+
+	if body.APIKey != nil {
+		apiKey := strings.TrimSpace(*body.APIKey)
+		if apiKey == "" {
+			writeError(c, http.StatusBadRequest, "API Key cannot be empty when provided.", nil)
+			return
+		}
+		backend.APIKey = apiKey
+	}
+
+	if err := h.repo.Update(ctx, *backend); err != nil {
+		if isUniqueViolation(err) {
+			writeError(c, http.StatusConflict, "A backend with this URL already exists.", nil)
+			return
+		}
+		writeError(c, http.StatusInternalServerError, "Failed to update backend.", err.Error())
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"id":   backend.ID,
+		"name": backend.Name,
+		"url":  backend.URL,
+	})
 }
 
 func isValidURL(raw string) bool {

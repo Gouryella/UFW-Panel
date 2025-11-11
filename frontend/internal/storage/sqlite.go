@@ -123,3 +123,15 @@ func (r *BackendRepository) Delete(ctx context.Context, id string) (bool, error)
 	}
 	return affected > 0, nil
 }
+
+func (r *BackendRepository) Update(ctx context.Context, backend models.Backend) error {
+	_, err := r.db.ExecContext(
+		ctx,
+		`UPDATE backends SET name = ?, url = ?, apiKey = ? WHERE id = ?`,
+		backend.Name, backend.URL, backend.APIKey, backend.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("update backend %s: %w", backend.ID, err)
+	}
+	return nil
+}

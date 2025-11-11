@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Loader2, LogOut, Server, PlusCircle, Trash2, Sparkles, ShieldCheck } from "lucide-react";
+import { Loader2, LogOut, Server, PlusCircle, Trash2, Sparkles, ShieldCheck, Settings2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   Select,
@@ -52,6 +52,8 @@ export default function UfwControlPanel() {
   const [backends, setBackends] = useState<BackendConfig[]>([]);
   const [selectedBackendId, setSelectedBackendId] = useState<string | null>(getInitialBackendId);
   const [isAddBackendDialogOpen, setIsAddBackendDialogOpen] = useState<boolean>(false);
+  const [backendDialogMode, setBackendDialogMode] = useState<"create" | "edit">("create");
+  const [backendBeingEdited, setBackendBeingEdited] = useState<BackendConfig | null>(null);
   const [backendToDelete, setBackendToDelete] = useState<BackendConfig | null>(null);
 
   const [ufwStatus, setUfwStatus] = useState<string | null>(null);
@@ -243,6 +245,28 @@ export default function UfwControlPanel() {
     setIsLoadingStatus(true);
   };
 
+  const openAddBackendDialog = () => {
+    setBackendDialogMode("create");
+    setBackendBeingEdited(null);
+    setIsAddBackendDialogOpen(true);
+  };
+
+  const openEditBackendDialog = () => {
+    if (!selectedBackend) {
+      toast.error("Select a backend to edit.");
+      return;
+    }
+    setBackendDialogMode("edit");
+    setBackendBeingEdited(selectedBackend);
+    setIsAddBackendDialogOpen(true);
+  };
+
+  const closeBackendDialog = () => {
+    setIsAddBackendDialogOpen(false);
+    setBackendDialogMode("create");
+    setBackendBeingEdited(null);
+  };
+
   const handleAddBackend = async (formData: AddBackendFormData) => {
     if (backends.some((b) => b.url === formData.url)) {
       toast.error(`Backend with URL ${formData.url} already exists.`);
@@ -270,11 +294,54 @@ export default function UfwControlPanel() {
       setSelectedBackendId(addedBackend.id);
       await refreshOnlineNodes(updatedBackends);
       toast.success(`Backend "${addedBackend.name}" added successfully.`);
-      setIsAddBackendDialogOpen(false);
+      closeBackendDialog();
     } catch (err) {
       const message = getErrorMessage(err);
       console.error("Error adding backend via API:", err);
       toast.error(`Failed to add backend: ${message}`);
+    }
+  };
+
+  const handleUpdateBackend = async (backendId: string, formData: AddBackendFormData) => {
+    if (backends.some((b) => b.url === formData.url && b.id !== backendId)) {
+      toast.error(`Another backend already uses URL ${formData.url}.`);
+      return;
+    }
+    if (backends.some((b) => b.name === formData.name && b.id !== backendId)) {
+      toast.error(`Another backend already uses the name "${formData.name}".`);
+      return;
+    }
+    try {
+      const payload = {
+        name: formData.name,
+        url: formData.url,
+        apiKey: formData.apiKey ? formData.apiKey : null,
+      };
+      const response = await fetch(resolveApiUrl(`/api/backends/${backendId}`), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.details || data.error || `Failed to update backend: ${response.statusText}`);
+      }
+      const updatedBackends = backends.map((backend) =>
+        backend.id === backendId ? { ...backend, name: data.name, url: data.url } : backend
+      );
+      setBackends(updatedBackends);
+      backendsRef.current = updatedBackends;
+      if (backendId === selectedBackendId && selectedBackend) {
+        setSelectedBackendId(backendId);
+      }
+      await refreshOnlineNodes(updatedBackends);
+      toast.success(`Backend "${data.name}" updated successfully.`);
+      closeBackendDialog();
+    } catch (err) {
+      const message = getErrorMessage(err);
+      console.error("Error updating backend via API:", err);
+      toast.error(`Failed to update backend: ${message}`);
     }
   };
 
@@ -751,7 +818,7 @@ export default function UfwControlPanel() {
             <div className="flex flex-wrap justify-center gap-3">
               <Button
                 variant="secondary"
-                onClick={() => setIsAddBackendDialogOpen(true)}
+                onClick={openAddBackendDialog}
                 className="h-10 rounded-xl border border-white/20 bg-white/10 px-6 text-slate-100 shadow-[0_20px_40px_rgba(14,23,42,0.45)] backdrop-blur transition hover:bg-white/15"
               >
                 <PlusCircle className="h-4 w-4" />
@@ -892,38 +959,52 @@ export default function UfwControlPanel() {
               </span>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="w-full sm:w-auto sm:flex-1">
-                  <Select onValueChange={handleBackendChange} value={selectedBackendId ?? undefined}>
-                    <SelectTrigger className="group h-12 w-full min-w-[220px] md:w-[280px] rounded-2xl border border-white/20 bg-slate-950/70 px-4 text-left text-sm font-medium text-slate-100 shadow-[0_18px_35px_rgba(13,25,58,0.55)] backdrop-blur transition-all hover:border-sky-300/40 hover:bg-slate-900/80 focus-visible:border-sky-300/60 focus-visible:bg-slate-900/85">
-                      <SelectValue placeholder={hasBackends ? "Select backend" : "No backend available"} />
-                    </SelectTrigger>
-                    <SelectContent className="rounded-2xl border border-white/20 bg-slate-950/90 text-slate-100 shadow-[0_32px_90px_rgba(8,20,46,0.65)] backdrop-blur-xl">
-                      {backends.length === 0 && (
-                        <SelectItem
-                          value="nobackends"
-                          disabled
-                          className="rounded-xl px-3 py-2 text-slate-500/80"
-                        >
-                          No backends configured
-                        </SelectItem>
-                      )}
-                      {backends.map((backend) => (
-                        <SelectItem
-                          key={backend.id}
-                          value={backend.id}
-                          className="rounded-xl px-3 py-2 text-slate-200 transition hover:bg-slate-800/70 hover:text-white focus:bg-sky-500/15 focus:text-sky-100 data-[state=checked]:bg-sky-500/20 data-[state=checked]:text-sky-100"
-                        >
-                          <div className="flex flex-col text-left">
-                            <span className="text-sm font-semibold tracking-wide">{backend.name}</span>
-                            <span className="text-xs text-slate-400/90">{backend.url}</span>
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1">
+                      <Select onValueChange={handleBackendChange} value={selectedBackendId ?? undefined}>
+                        <SelectTrigger className="group h-12 w-full min-w-[220px] md:w-[280px] rounded-2xl border border-white/20 bg-slate-950/70 px-4 text-left text-sm font-medium text-slate-100 shadow-[0_18px_35px_rgba(13,25,58,0.55)] backdrop-blur transition-all hover:border-sky-300/40 hover:bg-slate-900/80 focus-visible:border-sky-300/60 focus-visible:bg-slate-900/85">
+                          <SelectValue placeholder={hasBackends ? "Select backend" : "No backend available"} />
+                        </SelectTrigger>
+                        <SelectContent className="rounded-2xl border border-white/20 bg-slate-950/90 text-slate-100 shadow-[0_32px_90px_rgba(8,20,46,0.65)] backdrop-blur-xl">
+                          {backends.length === 0 && (
+                            <SelectItem
+                              value="nobackends"
+                              disabled
+                              className="rounded-xl px-3 py-2 text-slate-500/80"
+                            >
+                              No backends configured
+                            </SelectItem>
+                          )}
+                          {backends.map((backend) => (
+                            <SelectItem
+                              key={backend.id}
+                              value={backend.id}
+                              className="rounded-xl px-3 py-2 text-slate-200 transition hover:bg-slate-800/70 hover:text-white focus:bg-sky-500/15 focus:text-sky-100 data-[state=checked]:bg-sky-500/20 data-[state=checked]:text-sky-100"
+                            >
+                              <div className="flex flex-col text-left">
+                                <span className="text-sm font-semibold tracking-wide">{backend.name}</span>
+                                <span className="text-xs text-slate-400/90">{backend.url}</span>
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={openEditBackendDialog}
+                      disabled={!selectedBackend}
+                      className="inline-flex h-11 items-center gap-2 rounded-2xl border-white/20 bg-white/10 px-4 text-sm font-semibold text-slate-100 transition hover:bg-white/15 disabled:opacity-40"
+                    >
+                      <Settings2 className="h-4 w-4" />
+                      Edit backend
+                    </Button>
+                  </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 sm:flex-nowrap sm:gap-3">
                   <Button
-                    onClick={() => setIsAddBackendDialogOpen(true)}
+                    onClick={openAddBackendDialog}
                     className="h-11 rounded-2xl bg-gradient-to-r from-indigo-500/85 via-sky-500/80 to-cyan-400/80 px-4 text-sm font-semibold text-slate-50 shadow-[0_18px_45px_rgba(56,123,255,0.45)] transition hover:scale-[1.01]"
                   >
                     <PlusCircle className="h-4 w-4" />
@@ -968,7 +1049,20 @@ export default function UfwControlPanel() {
         </>
       )}
 
-      <AddBackendDialog isOpen={isAddBackendDialogOpen} onOpenChange={setIsAddBackendDialogOpen} onSave={handleAddBackend} />
+      <AddBackendDialog
+        isOpen={isAddBackendDialogOpen}
+        onOpenChange={(open) => {
+          setIsAddBackendDialogOpen(open);
+          if (!open) {
+            setBackendDialogMode("create");
+            setBackendBeingEdited(null);
+          }
+        }}
+        mode={backendDialogMode}
+        backend={backendDialogMode === "edit" ? backendBeingEdited : null}
+        onCreate={handleAddBackend}
+        onUpdate={handleUpdateBackend}
+      />
 
       <DeleteBackendDialog
         backendToDelete={backendToDelete}
