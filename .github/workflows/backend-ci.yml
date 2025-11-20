@@ -3,7 +3,7 @@ name: Backend CI and Release
 on:
   push:
     branches: [ "main" ]
-    tags: [ 'v*' ] # Trigger on tags like v1.0, v1.2.3
+    tags: [ 'v*' ]
     paths:
       - 'backend/**'
   pull_request:
@@ -31,15 +31,47 @@ jobs:
       shell: bash
 
     - name: Build for linux/amd64
-      run: GOOS=linux GOARCH=amd64 go build -o ${{ steps.project_vars.outputs.name }}-linux-amd64 -v .
+      run: |
+        GOOS=linux GOARCH=amd64 go build \
+          -trimpath \
+          -buildvcs=false \
+          -ldflags="-s -w" \
+          -o ${{ steps.project_vars.outputs.name }}-linux-amd64 \
+          .
       working-directory: ./backend
 
     - name: Build for linux/arm64
-      run: GOOS=linux GOARCH=arm64 go build -o ${{ steps.project_vars.outputs.name }}-linux-arm64 -v .
+      run: |
+        GOOS=linux GOARCH=arm64 go build \
+          -trimpath \
+          -buildvcs=false \
+          -ldflags="-s -w" \
+          -o ${{ steps.project_vars.outputs.name }}-linux-arm64 \
+          .
       working-directory: ./backend
 
     - name: Test
       run: go test -v ./...
+      working-directory: ./backend
+
+    # 下面两步：只在 tag push 时安装并使用 upx 压缩
+    - name: Install upx (release only)
+      if: startsWith(github.ref, 'refs/tags/')
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y upx
+
+    - name: Compress binaries with upx (release only)
+      if: startsWith(github.ref, 'refs/tags/')
+      run: |
+        echo "Before upx:"
+        ls -lh ${{ steps.project_vars.outputs.name }}-linux-amd64 ${{ steps.project_vars.outputs.name }}-linux-arm64 || true
+
+        upx --best --lzma --ultra-brute ${{ steps.project_vars.outputs.name }}-linux-amd64
+        upx --best --lzma --ultra-brute ${{ steps.project_vars.outputs.name }}-linux-arm64
+
+        echo "After upx:"
+        ls -lh ${{ steps.project_vars.outputs.name }}-linux-amd64 ${{ steps.project_vars.outputs.name }}-linux-arm64
       working-directory: ./backend
 
     - name: Upload amd64 binary
