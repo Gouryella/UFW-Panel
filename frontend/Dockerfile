@@ -1,13 +1,15 @@
 # Stage 1: install Node dependencies
-FROM node:22-alpine AS node-deps
+FROM --platform=$BUILDPLATFORM node:22-alpine AS node-deps
 RUN apk add --no-cache libc6-compat python3 build-base
 WORKDIR /app
 RUN corepack enable
 COPY package.json yarn.lock .yarnrc.yml ./
-RUN yarn install --immutable
+RUN yarn config set networkTimeout 600000 -g \
+    && yarn config set networkConcurrency 1 -g \
+    && yarn install
 
 # Stage 2: build static frontend
-FROM node:22-alpine AS node-build
+FROM --platform=$BUILDPLATFORM node:22-alpine AS node-build
 WORKDIR /app
 RUN corepack enable
 COPY --from=node-deps /app/node_modules ./node_modules
@@ -21,8 +23,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY internal ./internal
 COPY cmd ./cmd
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+ARG TARGETOS
+ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o frontend-server ./cmd/frontend-server
 
 # Final runtime image
